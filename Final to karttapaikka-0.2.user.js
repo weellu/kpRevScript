@@ -1,10 +1,12 @@
 // ==UserScript==
 // @name         Final to karttapaikka
 // @namespace    http://tampermonkey.net/
-// @version      0.2
+// @version      0.3
 // @description  Add Link to Kansalaisen Karttapaikka to final location of the geocache on review page
 // @author       Veli-Pekka Eloranta
 // @match        https://*.geocaching.com/*
+// @updateURL    https://github.com/weellu/kpRevScript/blob/main/Final%20to%20karttapaikka-0.2.user.js
+// @updateURL    https://github.com/weellu/kpRevScript/blob/main/Final%20to%20karttapaikka-0.2.user.js
 // @grant        none
 // @run-at       document-start
 // ==/UserScript==

@@ -1,2 +1,2 @@
 # kpRevScript
-TampereMonkey script to add a link to karttapaikka
+TamperMonkey script to add a link to karttapaikka to review page
