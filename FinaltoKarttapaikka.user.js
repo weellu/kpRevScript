@@ -5,8 +5,8 @@
 // @description  Add Link to Kansalaisen Karttapaikka to final location of the geocache on review page
 // @author       Veli-Pekka Eloranta
 // @match        https://*.geocaching.com/*
-// @updateURL    https://github.com/weellu/kpRevScript/blob/main/Final%20to%20karttapaikka-0.2.user.js
-// @updateURL    https://github.com/weellu/kpRevScript/blob/main/Final%20to%20karttapaikka-0.2.user.js
+// @updateURL    https://github.com/weellu/kpRevScript/blob/main/FinaltoKarttapaikka.user.js
+// @updateURL    https://github.com/weellu/kpRevScript/blob/main/FinaltoKarttapaikka.user.js
 // @grant        none
 // @run-at       document-start
 // ==/UserScript==
