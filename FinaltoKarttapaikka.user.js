@@ -1,55 +1,286 @@
 // ==UserScript==
-// @name         Final to karttapaikka
+// @name         Final to karttapaikka + reviewer map
 // @namespace    http://tampermonkey.net/
-// @version      0.3
-// @description  Add Link to Kansalaisen Karttapaikka to final location of the geocache on review page
+// @version      0.4
+// @description  Add Kansalaisen Karttapaikka links and an interactive MML/OSM map (with waypoints and range rings) to the geocache review page
 // @author       Veli-Pekka Eloranta
 // @match        https://*.geocaching.com/*
-// @updateURL    https://github.com/weellu/kpRevScript/blob/main/FinaltoKarttapaikka.user.js
-// @updateURL    https://github.com/weellu/kpRevScript/blob/main/FinaltoKarttapaikka.user.js
-// @grant        none
-// @run-at       document-start
+// @require      https://unpkg.com/leaflet@1.9.4/dist/leaflet.js
+// @resource     leafletCss https://unpkg.com/leaflet@1.9.4/dist/leaflet.css
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_deleteValue
+// @grant        GM_registerMenuCommand
+// @grant        GM_getResourceText
+// @grant        GM_addStyle
+// @run-at       document-idle
+// @updateURL    https://github.com/weellu/kpRevScript/raw/main/FinaltoKarttapaikka.user.js
+// @downloadURL  https://github.com/weellu/kpRevScript/raw/main/FinaltoKarttapaikka.user.js
 // ==/UserScript==
 
-(function() {
+(function () {
     'use strict';
 
-    // Function to create and insert the link after the span element
-    function addLinkAfterSpan() {
-        // Find all span elements with matching ids
-        const spans = document.querySelectorAll('[id^="ctl00_ContentBody_Waypoints_Waypoints_ctl"][id$="_uxDistance"]');
+    // ---------------------------------------------------------------------
+    // MML (Maanmittauslaitos) API key handling
+    //
+    // The key is stored in Tampermonkey storage, NOT in this file, so it is
+    // never committed to the public repo. Set / change / clear it from the
+    // Tampermonkey menu (the puzzle icon -> this script).
+    // Get a personal key: https://www.maanmittauslaitos.fi/rajapinnat/api-avaimen-ohje
+    // ---------------------------------------------------------------------
+    const KEY_STORE = 'mml_api_key';
+    const PROMPTED_STORE = 'mml_api_key_prompted';
 
-        // If there are any matching span elements
-        if (spans.length > 0) {
-            // Iterate over each matching span element
-            var iteration = 0;
-            spans.forEach((targetSpan) => {
-                // Get the parent <td> element of the target span
-                const parentTd = targetSpan.closest('td');
+    let apiKey = GM_getValue(KEY_STORE, '');
 
-                // Create the link element
-                const link = document.createElement('a');
-                const latitude = $("#ctl00_ContentBody_CacheDataControl1_CacheData").attr("data-wp_"+iteration+"_latitude");
-                const longitude = $("#ctl00_ContentBody_CacheDataControl1_CacheData").attr("data-wp_"+iteration+"_longitude");
+    GM_registerMenuCommand('Set MML API key', function () {
+        const v = prompt('Enter your MML (Maanmittauslaitos) API key:', GM_getValue(KEY_STORE, ''));
+        if (v !== null) {
+            GM_setValue(KEY_STORE, v.trim());
+            GM_setValue(PROMPTED_STORE, true);
+            location.reload();
+        }
+    });
+    GM_registerMenuCommand('Clear MML API key', function () {
+        GM_deleteValue(KEY_STORE);
+        GM_deleteValue(PROMPTED_STORE);
+        location.reload();
+    });
 
-                // Build the link URL for Kansalaisen Karttapaikka
-                link.href = 'https://asiointi.maanmittauslaitos.fi/karttapaikka/api/linkki?x=' + latitude + '&y=' + longitude + '&srs=EPSG:4258&scale=4000';
-                link.textContent = 'View on Kansalaisen Karttapaikka'; // Link text
-                link.target = '_blank';
+    // ---------------------------------------------------------------------
+    // Feature 1: Karttapaikka links next to each waypoint distance
+    // (works on any page that has the waypoint distance cells)
+    // ---------------------------------------------------------------------
+    function karttapaikkaLink(lat, lon) {
+        return 'https://asiointi.maanmittauslaitos.fi/karttapaikka/api/linkki?x=' + lat +
+            '&y=' + lon + '&srs=EPSG:4258&scale=4000';
+    }
 
-                // Style the link (optional)
-                link.style.display = 'block';
-                link.style.marginLeft = '10px';
-                link.style.textDecoration = 'none';
-                link.style.color = '#0066cc';
+    function addWaypointLinks() {
+        const data = document.querySelector('#ctl00_ContentBody_CacheDataControl1_CacheData');
+        if (!data) return;
 
-                // Insert the link after the target span
-                parentTd.appendChild(link);
-                iteration++;
+        const spans = document.querySelectorAll(
+            '[id^="ctl00_ContentBody_Waypoints_Waypoints_ctl"][id$="_uxDistance"]');
+        if (!spans.length) return;
+
+        spans.forEach(function (span, i) {
+            const parentTd = span.closest('td');
+            if (!parentTd || parentTd.querySelector('.kp-wp-link')) return;
+
+            const lat = data.getAttribute('data-wp_' + i + '_latitude');
+            const lon = data.getAttribute('data-wp_' + i + '_longitude');
+            if (!lat || !lon) return;
+
+            const link = document.createElement('a');
+            link.className = 'kp-wp-link';
+            link.href = karttapaikkaLink(lat, lon);
+            link.textContent = 'View on Kansalaisen Karttapaikka';
+            link.target = '_blank';
+            link.style.display = 'block';
+            link.style.marginLeft = '10px';
+            link.style.textDecoration = 'none';
+            link.style.color = '#0066cc';
+            parentTd.appendChild(link);
+        });
+    }
+
+    // ---------------------------------------------------------------------
+    // Feature 2: Interactive map on the review page
+    // ---------------------------------------------------------------------
+    const waypointTypes = {
+        217: 'Parking Area',
+        218: 'Question to Answer',
+        219: 'Stages of a Multicache',
+        220: 'Final Location',
+        221: 'Trailhead',
+        452: 'Reference Point'
+    };
+
+    function streetViewLink(lat, lon) {
+        return '<a target="_blank" href="https://maps.google.com/maps?cbp=0,0,0,0,0&layer=c&ll=' +
+            lat + ',' + lon + '&cbll=' + lat + ',' + lon + '&q=' + lat + ',' + lon + '">StreetView</a>';
+    }
+
+    function pinIcon(typeId) {
+        return L.icon({
+            iconUrl: '../images/wpttypes/pins/' + typeId + '.png',
+            iconSize: [20, 23],
+            iconAnchor: [10, 23],
+            shadowUrl: null
+        });
+    }
+
+    function buildMap() {
+        const data = document.querySelector('#ctl00_ContentBody_CacheDataControl1_CacheData');
+        if (!data) return;
+
+        const latitude = parseFloat(data.getAttribute('data-latitude'));
+        const longitude = parseFloat(data.getAttribute('data-longitude'));
+        if (isNaN(latitude) || isNaN(longitude)) return;
+
+        const waypointCount = parseInt(data.getAttribute('data-wp_count'), 10) || 0;
+        const cacheTypeId = data.getAttribute('data-cachetypeid');
+
+        // Inject Leaflet CSS (fetched by the userscript manager, so CSP-safe)
+        try {
+            GM_addStyle(GM_getResourceText('leafletCss'));
+        } catch (e) {
+            const l = document.createElement('link');
+            l.rel = 'stylesheet';
+            l.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+            document.head.appendChild(l);
+        }
+        GM_addStyle('#kp-map{height:400px;margin:10px 0;border:1px solid #ccc;}');
+
+        // Insert the map container in a sensible place on the review page
+        const mapDiv = document.createElement('div');
+        mapDiv.id = 'kp-map';
+        const anchor =
+            document.querySelector('#ctl00_ContentBody_CacheDetails_AdditionalDetails') ||
+            document.querySelector('#ctl00_ContentBody_uxWaypoints') ||
+            document.querySelector('#ctl00_ContentBody_CacheDataControl1_CacheData');
+        if (anchor && anchor.parentNode) {
+            anchor.parentNode.insertBefore(mapDiv, anchor);
+        } else {
+            document.body.insertBefore(mapDiv, document.body.firstChild);
+        }
+
+        const map = L.map('kp-map');
+
+        // --- Base layers -------------------------------------------------
+        const mmlUrl = function (layer) {
+            return 'https://avoin-karttakuva.maanmittauslaitos.fi/avoin/wmts/1.0.0/' + layer +
+                '/default/WGS84_Pseudo-Mercator/{z}/{y}/{x}.png?api-key=' + apiKey;
+        };
+        const mmlAttr = '&copy; Maanmittauslaitos';
+
+        const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '&copy; OpenStreetMap contributors'
+        });
+
+        const baseMaps = {};
+        let defaultLayer = osm;
+
+        if (apiKey) {
+            const maastokartta = L.tileLayer(mmlUrl('maastokartta'), { maxZoom: 18, attribution: mmlAttr });
+            const taustakartta = L.tileLayer(mmlUrl('taustakartta'), { maxZoom: 18, attribution: mmlAttr });
+            const ortokuva     = L.tileLayer(mmlUrl('ortokuva'),     { maxZoom: 18, attribution: mmlAttr });
+
+            baseMaps['Maastokartta (MML)'] = maastokartta;
+            baseMaps['Taustakartta (MML)'] = taustakartta;
+            baseMaps['Ilmakuva (MML)'] = ortokuva;
+            defaultLayer = maastokartta;
+
+            // Automatic fallback to OSM if the MML tiles fail (bad/expired key,
+            // referrer restriction, service down, ...)
+            let fellBack = false;
+            [maastokartta, taustakartta, ortokuva].forEach(function (layer) {
+                layer.on('tileerror', function () {
+                    if (fellBack || !map.hasLayer(layer)) return;
+                    fellBack = true;
+                    console.warn('[kpRevScript] MML tiles failed to load, falling back to OpenStreetMap. Check your MML API key.');
+                    map.removeLayer(layer);
+                    osm.addTo(map);
+                });
             });
+        }
+        baseMaps['OpenStreetMap'] = osm;
+
+        defaultLayer.addTo(map);
+        map.setView([latitude, longitude], 15);
+
+        // --- Overlays: old caches + range rings --------------------------
+        const groundspeak = L.tileLayer(
+            'https://www.geocaching.com/map/map.png?x={x}&y={y}&z={z}', {
+                maxZoom: 18,
+                attribution: 'PMO caches not included'
+            });
+        const rangeLayer = L.layerGroup();
+
+        const overlayMaps = {
+            'Vanhat kätköt': groundspeak,
+            'Etäisyysrenkaat': rangeLayer
+        };
+        L.control.layers(baseMaps, overlayMaps).addTo(map);
+
+        function addRange(latlng) {
+            for (let r = 1; r <= 161; r += 10) {
+                const circle = L.circle(latlng, {
+                    radius: r,
+                    color: 'red',
+                    fill: false,
+                    weight: 1,
+                    opacity: 0.5
+                });
+                circle.bindPopup(r + ' metriä nollapisteestä');
+                rangeLayer.addLayer(circle);
+            }
+        }
+
+        // --- Cache marker ------------------------------------------------
+        const bounds = L.latLngBounds([[latitude, longitude]]);
+
+        const cacheMarker = L.marker([latitude, longitude], { icon: pinIcon(cacheTypeId) }).addTo(map);
+        cacheMarker.bindPopup(
+            'Latitude: ' + latitude + '<br/>Longitude: ' + longitude +
+            '<br/><a target="_blank" href="' + karttapaikkaLink(latitude, longitude) + '">Karttapaikka</a>' +
+            '<br/>' + streetViewLink(latitude, longitude));
+        addRange([latitude, longitude]);
+
+        // --- Waypoint markers --------------------------------------------
+        for (let i = 0; i < waypointCount; i++) {
+            const wpLat = parseFloat(data.getAttribute('data-wp_' + i + '_latitude'));
+            const wpLon = parseFloat(data.getAttribute('data-wp_' + i + '_longitude'));
+            if (isNaN(wpLat) || isNaN(wpLon)) continue;
+
+            const wpTypeId = data.getAttribute('data-wp_' + i + '_type');
+            const wpType = waypointTypes[wpTypeId] || 'Waypoint';
+
+            const wpMarker = L.marker([wpLat, wpLon], { icon: pinIcon(wpTypeId) }).addTo(map);
+            wpMarker.bindPopup(
+                wpType + '<br/>Latitude: ' + wpLat + '<br/>Longitude: ' + wpLon +
+                '<br/><a target="_blank" href="' + karttapaikkaLink(wpLat, wpLon) + '">Karttapaikka</a>' +
+                '<br/>' + streetViewLink(wpLat, wpLon));
+            addRange([wpLat, wpLon]);
+            bounds.extend([wpLat, wpLon]);
+        }
+
+        if (waypointCount > 0) {
+            map.fitBounds(bounds.pad(0.2));
         }
     }
 
-    // Run the function to add the link
-    window.addEventListener('load', addLinkAfterSpan);
+    // ---------------------------------------------------------------------
+    // Init
+    // ---------------------------------------------------------------------
+    function init() {
+        addWaypointLinks();
+
+        const onReviewPage = /\/admin\/review\.aspx/i.test(location.pathname);
+        const hasCacheData = document.querySelector('#ctl00_ContentBody_CacheDataControl1_CacheData');
+        if (!onReviewPage || !hasCacheData) return;
+
+        // Offer to store a key once, if we don't have one yet.
+        if (!apiKey && !GM_getValue(PROMPTED_STORE, false)) {
+            const v = prompt(
+                'Enter your MML API key to use Karttapaikka maps.\n' +
+                '(Leave empty to use OpenStreetMap. You can set it later from the Tampermonkey menu.)', '');
+            GM_setValue(PROMPTED_STORE, true);
+            if (v && v.trim()) {
+                apiKey = v.trim();
+                GM_setValue(KEY_STORE, apiKey);
+            }
+        }
+
+        buildMap();
+    }
+
+    if (document.readyState === 'loading') {
+        window.addEventListener('DOMContentLoaded', init);
+    } else {
+        init();
+    }
 })();
