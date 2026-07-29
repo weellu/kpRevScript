@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Final to karttapaikka + reviewer map
 // @namespace    http://tampermonkey.net/
-// @version      0.4
-// @description  Add Kansalaisen Karttapaikka links and an interactive MML/OSM map (with waypoints and range rings) to the geocache review page
+// @version      0.5
+// @description  Add Kansalaisen Karttapaikka links and an interactive MML/OSM/Google map (with waypoints and range rings) to the geocache review page
 // @author       Veli-Pekka Eloranta
 // @match        https://*.geocaching.com/*
 // @require      https://unpkg.com/leaflet@1.9.4/dist/leaflet.js
@@ -132,7 +132,15 @@
             l.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
             document.head.appendChild(l);
         }
-        GM_addStyle('#kp-map{height:400px;margin:10px 0;border:1px solid #ccc;}');
+        GM_addStyle(
+            '#kp-map{height:400px;margin:10px 0;border:1px solid #ccc;}' +
+            // Leaflet's CSS points the layers-control icon at a relative image
+            // path that 404s when injected into the review page, leaving a blank
+            // white button. Point it at the absolute CDN images instead.
+            '.leaflet-control-layers-toggle{' +
+            'background-image:url(https://unpkg.com/leaflet@1.9.4/dist/images/layers.png);}' +
+            '.leaflet-retina .leaflet-control-layers-toggle{' +
+            'background-image:url(https://unpkg.com/leaflet@1.9.4/dist/images/layers-2x.png);background-size:26px 26px;}');
 
         // Insert the map container in a sensible place on the review page
         const mapDiv = document.createElement('div');
@@ -161,6 +169,18 @@
             attribution: '&copy; OpenStreetMap contributors'
         });
 
+        const googleLayer = function (lyrs) {
+            return L.tileLayer('https://mt{s}.google.com/vt/lyrs=' + lyrs + '&x={x}&y={y}&z={z}', {
+                maxZoom: 20,
+                subdomains: '0123',
+                attribution: '&copy; Google'
+            });
+        };
+        const gRoads   = googleLayer('m');
+        const gSat     = googleLayer('s');
+        const gHybrid  = googleLayer('y');
+        const gTerrain = googleLayer('p');
+
         const baseMaps = {};
         let defaultLayer = osm;
 
@@ -188,20 +208,18 @@
             });
         }
         baseMaps['OpenStreetMap'] = osm;
+        baseMaps['Google Maps'] = gRoads;
+        baseMaps['Google Satelliitti'] = gSat;
+        baseMaps['Google Hybridi'] = gHybrid;
+        baseMaps['Google Maasto'] = gTerrain;
 
         defaultLayer.addTo(map);
         map.setView([latitude, longitude], 15);
 
-        // --- Overlays: old caches + range rings --------------------------
-        const groundspeak = L.tileLayer(
-            'https://www.geocaching.com/map/map.png?x={x}&y={y}&z={z}', {
-                maxZoom: 18,
-                attribution: 'PMO caches not included'
-            });
+        // --- Overlay: range rings ----------------------------------------
         const rangeLayer = L.layerGroup();
 
         const overlayMaps = {
-            'Vanhat kätköt': groundspeak,
             'Etäisyysrenkaat': rangeLayer
         };
         L.control.layers(baseMaps, overlayMaps).addTo(map);
