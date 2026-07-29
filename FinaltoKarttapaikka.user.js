@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Final to karttapaikka + reviewer map
 // @namespace    http://tampermonkey.net/
-// @version      0.5
-// @description  Add Kansalaisen Karttapaikka links and an interactive MML/OSM/Google map (with waypoints and range rings) to the geocache review page
+// @version      0.6
+// @description  Add Kansalaisen Karttapaikka links and an interactive MML/OSM/Google map (waypoints, range rings, road-owner overlay) to the geocache review page
 // @author       Veli-Pekka Eloranta
 // @match        https://*.geocaching.com/*
 // @require      https://unpkg.com/leaflet@1.9.4/dist/leaflet.js
@@ -140,7 +140,9 @@
             '.leaflet-control-layers-toggle{' +
             'background-image:url(https://unpkg.com/leaflet@1.9.4/dist/images/layers.png);}' +
             '.leaflet-retina .leaflet-control-layers-toggle{' +
-            'background-image:url(https://unpkg.com/leaflet@1.9.4/dist/images/layers-2x.png);background-size:26px 26px;}');
+            'background-image:url(https://unpkg.com/leaflet@1.9.4/dist/images/layers-2x.png);background-size:26px 26px;}' +
+            '.kp-legend{background:rgba(255,255,255,0.85);padding:4px 6px;border:1px solid #ccc;border-radius:4px;}' +
+            '.kp-legend img{display:block;}');
 
         // Insert the map container in a sensible place on the review page
         const mapDiv = document.createElement('div');
@@ -219,10 +221,42 @@
         // --- Overlay: range rings ----------------------------------------
         const rangeLayer = L.layerGroup();
 
+        // --- Overlay: road owners (Väylävirasto Digiroad, open WMS) ------
+        // "Tiestön omistajat" = hallinnollinen luokka: valtio / kunta /
+        // yksityinen. NB: the capabilities name (DR_Tielinkki_...) errors on
+        // GetMap; the renderable layer is the lowercase dr_tielinkki_hall_lk.
+        // Only drawn when zoomed in (server MaxScaleDenominator = 1:100000).
+        const digiroadOws = 'https://avoinapi.vaylapilvi.fi/vaylatiedot/digiroad/ows';
+        const roadOwners = L.tileLayer.wms(digiroadOws, {
+            layers: 'dr_tielinkki_hall_lk',
+            format: 'image/png',
+            transparent: true,
+            version: '1.3.0',
+            maxZoom: 20,
+            opacity: 0.8,
+            attribution: '&copy; Väylävirasto, Digiroad'
+        });
+
         const overlayMaps = {
-            'Etäisyysrenkaat': rangeLayer
+            'Etäisyysrenkaat': rangeLayer,
+            'Tiestön omistajat': roadOwners
         };
         L.control.layers(baseMaps, overlayMaps).addTo(map);
+
+        // Legend for the road-owner overlay, shown only while it is active.
+        const ownerLegend = L.control({ position: 'bottomleft' });
+        ownerLegend.onAdd = function () {
+            const div = L.DomUtil.create('div', 'kp-legend');
+            div.innerHTML = '<img alt="Tiestön omistajat" src="' + digiroadOws +
+                '?service=WMS&version=1.3.0&request=GetLegendGraphic&format=image/png&layer=dr_tielinkki_hall_lk">';
+            return div;
+        };
+        map.on('overlayadd', function (e) {
+            if (e.layer === roadOwners) { ownerLegend.addTo(map); }
+        });
+        map.on('overlayremove', function (e) {
+            if (e.layer === roadOwners) { map.removeControl(ownerLegend); }
+        });
 
         function addRange(latlng) {
             for (let r = 1; r <= 161; r += 10) {
