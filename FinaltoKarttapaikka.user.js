@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Final to karttapaikka + reviewer map
 // @namespace    http://tampermonkey.net/
-// @version      0.80
+// @version      0.81
 // @description  Add Kansalaisen Karttapaikka links and an interactive MML/OSM/Google map (waypoints, range rings, road-owner overlay) to the geocache review page
 // @author       Veli-Pekka Eloranta
 // @match        https://*.geocaching.com/*
@@ -150,7 +150,12 @@
             '.kp-road-control a{width:36px;height:36px;display:flex;align-items:center;' +
             'justify-content:center;color:#333;cursor:pointer;border-radius:5px;}' +
             '.leaflet-touch .kp-road-control a{width:44px;height:44px;}' +
-            '.kp-road-control a.active{background:#4a90d9;color:#fff;}');
+            '.kp-road-control a.active{background:#4a90d9;color:#fff;}' +
+            // Recolor the black cadastral WMS lines to bright red + slight
+            // thickening (drop-shadow), since the server blocks custom styling.
+            '.kp-cadastral{filter:brightness(0) saturate(100%) invert(15%) sepia(98%) ' +
+            'saturate(7480%) hue-rotate(2deg) brightness(100%) contrast(118%) ' +
+            'drop-shadow(0 0 0.5px #ff0000);}');
 
         // Insert the map container in a sensible place on the review page
         const mapDiv = document.createElement('div');
@@ -262,18 +267,21 @@
         // "Kiinteistörajat" — same boundaries shown in Kansalaisen
         // Karttapaikka. Keyless WMS, works on any base map. Server only draws
         // them when zoomed in (MaxScaleDenominator = 1:20000, ~zoom 15+).
+        // The WMS renders boundaries in black; SLD restyling is blocked by the
+        // server's firewall, so we recolor them to bright red client-side via a
+        // CSS filter on the layer (className below -> .kp-cadastral rule).
         const cadastral = L.tileLayer.wms('https://inspire-wms.maanmittauslaitos.fi/inspire-wms/cp/wms', {
             layers: 'CP.CadastralBoundary',
             format: 'image/png',
             transparent: true,
             version: '1.3.0',
             maxZoom: 20,
+            className: 'kp-cadastral',
             attribution: '&copy; Maanmittauslaitos'
         });
 
         const overlayMaps = {
-            'Etäisyysrenkaat': rangeLayer,
-            'Kiinteistörajat': cadastral
+            'Etäisyysrenkaat': rangeLayer
         };
         L.control.layers(baseMaps, overlayMaps).addTo(map);
 
@@ -342,6 +350,53 @@
             }
         });
         map.addControl(new RoadControl());
+
+        // --- Cadastral-boundary toggle control (below the road button) ---
+        // Simple on/off overlay: just adds/removes the property boundaries on
+        // top of the current map, without changing the base layer.
+        const CAD_ICON = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" ' +
+            'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+            '<path d="M3 3h18v18H3z"/><path d="M3 10h9M12 3v14M12 14h9"/></svg>';
+
+        let cadastralActive = false;
+        let cadLink = null;
+
+        function toggleCadastral() {
+            cadastralActive = !cadastralActive;
+            if (cadastralActive) {
+                cadastral.addTo(map);
+                cadastral.bringToFront();
+                if (cadLink) {
+                    cadLink.title = 'Piilota kiinteistörajat';
+                    cadLink.classList.add('active');
+                }
+            } else {
+                if (map.hasLayer(cadastral)) { map.removeLayer(cadastral); }
+                if (cadLink) {
+                    cadLink.title = 'Näytä kiinteistörajat';
+                    cadLink.classList.remove('active');
+                }
+            }
+        }
+
+        const CadControl = L.Control.extend({
+            options: { position: 'topright' },
+            onAdd: function () {
+                const container = L.DomUtil.create('div', 'leaflet-control kp-road-control');
+                cadLink = L.DomUtil.create('a', '', container);
+                cadLink.href = '#';
+                cadLink.title = 'Näytä kiinteistörajat';
+                cadLink.setAttribute('aria-label', 'Kiinteistörajat');
+                cadLink.innerHTML = CAD_ICON;
+                L.DomEvent.disableClickPropagation(container);
+                L.DomEvent.on(cadLink, 'click', function (e) {
+                    L.DomEvent.preventDefault(e);
+                    toggleCadastral();
+                });
+                return container;
+            }
+        });
+        map.addControl(new CadControl());
 
         function addRange(latlng) {
             for (let r = 1; r <= 161; r += 10) {
