@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Final to karttapaikka + reviewer map
 // @namespace    http://tampermonkey.net/
-// @version      0.82
+// @version      0.83
 // @description  Add Kansalaisen Karttapaikka links and an interactive MML/OSM/Google map (waypoints, range rings, road-owner overlay) to the geocache review page
 // @author       Veli-Pekka Eloranta
 // @match        https://*.geocaching.com/*
@@ -402,17 +402,22 @@
         map.addControl(new CadControl());
 
         // --- Distance measurement tool (below the cadastral button) ------
-        // Measures from the cache zero-point. Activate -> a light-blue
-        // rubber-band line follows the cursor with a live distance tooltip.
-        // Click the map -> the line locks (stays) and measuring ends. Press
-        // the button again -> clears the old line and starts a new measurement.
+        // Two-point measurement that snaps to the known points (cache zero
+        // point + all waypoints, collected in measurePoints). Activate ->
+        // click a start point (snaps to the nearest known point if you click
+        // near one) -> a light-blue rubber-band line follows the cursor with a
+        // live distance tooltip (the end also snaps) -> click again to lock.
+        // The line stays; pressing the button again resets / starts anew.
         const MEASURE_ICON = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" ' +
             'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
             '<path d="M14.5 2.5 21.5 9.5 9.5 21.5 2.5 14.5z"/>' +
             '<path d="M7 11l1.5 1.5M10 8l1.5 1.5M13 5l1.5 1.5"/></svg>';
 
-        const measureAnchor = L.latLng(latitude, longitude);
+        // Known snap targets: cache zero point first, waypoints pushed below.
+        const measurePoints = [L.latLng(latitude, longitude)];
+        const SNAP_PX = 20;
         let measureActive = false;
+        let measureStart = null;
         let measureLine = null;
         let measureTip = null;
         let measLink = null;
@@ -420,19 +425,31 @@
         function fmtDist(m) {
             return m < 1000 ? Math.round(m) + ' m' : (m / 1000).toFixed(2) + ' km';
         }
+        function snapLatLng(latlng) {
+            const p = map.latLngToContainerPoint(latlng);
+            let best = latlng, bestPx = SNAP_PX;
+            measurePoints.forEach(function (kp) {
+                const d = p.distanceTo(map.latLngToContainerPoint(kp));
+                if (d <= bestPx) { bestPx = d; best = kp; }
+            });
+            return best;
+        }
         function clearMeasure() {
             if (measureLine) { map.removeLayer(measureLine); measureLine = null; }
             if (measureTip) { map.removeLayer(measureTip); measureTip = null; }
+            measureStart = null;
         }
-        function measureUpdate(to) {
+        function measureDraw(from, to, locked) {
+            const dash = locked ? null : '6,6';
             if (!measureLine) {
-                measureLine = L.polyline([measureAnchor, to], {
-                    color: '#4dabf7', weight: 3, opacity: 0.9, dashArray: '6,6'
+                measureLine = L.polyline([from, to], {
+                    color: '#4dabf7', weight: 3, opacity: 0.9, dashArray: dash
                 }).addTo(map);
             } else {
-                measureLine.setLatLngs([measureAnchor, to]);
+                measureLine.setLatLngs([from, to]);
+                measureLine.setStyle({ dashArray: dash });
             }
-            const content = fmtDist(map.distance(measureAnchor, to));
+            const content = fmtDist(map.distance(from, to));
             if (!measureTip) {
                 measureTip = L.tooltip({ permanent: true, direction: 'top', offset: [0, -6], className: 'kp-measure-tip' })
                     .setLatLng(to).setContent(content);
@@ -441,11 +458,18 @@
                 measureTip.setLatLng(to).setContent(content);
             }
         }
-        function onMeasureMove(e) { measureUpdate(e.latlng); }
+        function onMeasureMove(e) {
+            if (!measureStart) return;
+            measureDraw(measureStart, snapLatLng(e.latlng), false);
+        }
         function onMeasureClick(e) {
-            measureUpdate(e.latlng);                       // place line/tooltip at click
-            if (measureLine) { measureLine.setStyle({ dashArray: null }); } // solid = locked
-            stopMeasureMode();                             // line + tooltip stay on the map
+            const pt = snapLatLng(e.latlng);
+            if (!measureStart) {
+                measureStart = pt;                 // first click sets the start point
+                return;
+            }
+            measureDraw(measureStart, pt, true);   // second click locks the line
+            stopMeasureMode();                     // line + tooltip stay on the map
         }
         function stopMeasureMode() {
             map.off('mousemove', onMeasureMove);
@@ -527,6 +551,7 @@
                 '<br/>' + streetViewLink(wpLat, wpLon));
             addRange([wpLat, wpLon]);
             bounds.extend([wpLat, wpLon]);
+            measurePoints.push(L.latLng(wpLat, wpLon)); // snap target for measuring
         }
 
         if (waypointCount > 0) {
