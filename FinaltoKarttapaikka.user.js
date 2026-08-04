@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Final to karttapaikka + reviewer map
 // @namespace    http://tampermonkey.net/
-// @version      0.72
+// @version      0.8
 // @description  Add Kansalaisen Karttapaikka links and an interactive MML/OSM/Google map (waypoints, range rings, road-owner overlay) to the geocache review page
 // @author       Veli-Pekka Eloranta
 // @match        https://*.geocaching.com/*
@@ -258,8 +258,22 @@
             attribution: '&copy; Väylävirasto, Digiroad'
         });
 
+        // --- Overlay: cadastral boundaries (MML INSPIRE, open, no key) ---
+        // "Kiinteistörajat" — same boundaries shown in Kansalaisen
+        // Karttapaikka. Keyless WMS, works on any base map. Server only draws
+        // them when zoomed in (MaxScaleDenominator = 1:20000, ~zoom 15+).
+        const cadastral = L.tileLayer.wms('https://inspire-wms.maanmittauslaitos.fi/inspire-wms/cp/wms', {
+            layers: 'CP.CadastralBoundary',
+            format: 'image/png',
+            transparent: true,
+            version: '1.3.0',
+            maxZoom: 20,
+            attribution: '&copy; Maanmittauslaitos'
+        });
+
         const overlayMaps = {
-            'Etäisyysrenkaat': rangeLayer
+            'Etäisyysrenkaat': rangeLayer,
+            'Kiinteistörajat': cadastral
         };
         L.control.layers(baseMaps, overlayMaps).addTo(map);
 
