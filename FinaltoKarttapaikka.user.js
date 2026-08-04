@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Final to karttapaikka + reviewer map
 // @namespace    http://tampermonkey.net/
-// @version      0.7
+// @version      0.71
 // @description  Add Kansalaisen Karttapaikka links and an interactive MML/OSM/Google map (waypoints, range rings, road-owner overlay) to the geocache review page
 // @author       Veli-Pekka Eloranta
 // @match        https://*.geocaching.com/*
@@ -143,9 +143,10 @@
             'background-image:url(https://unpkg.com/leaflet@1.9.4/dist/images/layers-2x.png);background-size:26px 26px;}' +
             '.kp-legend{background:rgba(255,255,255,0.85);padding:4px 6px;border:1px solid #ccc;border-radius:4px;}' +
             '.kp-legend img{display:block;}' +
-            '.kp-road-toggle{display:inline-block;margin:0 0 10px;padding:6px 12px;cursor:pointer;' +
-            'border:1px solid #888;border-radius:4px;background:#f4f4f4;font-size:13px;}' +
-            '.kp-road-toggle.active{background:#4a90d9;color:#fff;border-color:#357ab3;}');
+            '.kp-road-control{background:#fff;border-radius:4px;box-shadow:0 1px 5px rgba(0,0,0,0.4);}' +
+            '.kp-road-control a{width:36px;height:36px;display:flex;align-items:center;' +
+            'justify-content:center;color:#333;cursor:pointer;border-radius:4px;}' +
+            '.kp-road-control a.active{background:#4a90d9;color:#fff;}');
 
         // Insert the map container in a sensible place on the review page
         const mapDiv = document.createElement('div');
@@ -267,20 +268,22 @@
             return div;
         };
 
-        // --- Road-owner toggle button (below the map) --------------------
-        // Not a layer in the switcher: pressing it forces Google Maps as the
-        // base (roads are clearest there), shows the road-owner overlay + its
-        // legend, and remembers the previous base. Pressing again hides the
-        // overlay and restores whatever base was active before.
-        const roadBtn = document.createElement('button');
-        roadBtn.type = 'button';
-        roadBtn.className = 'kp-road-toggle';
-        roadBtn.textContent = 'Näytä tiestön omistajat';
-        mapDiv.parentNode.insertBefore(roadBtn, mapDiv.nextSibling);
+        // --- Road-owner toggle control (below the layer selector) --------
+        // A Leaflet control in the same top-right corner as the layer
+        // switcher: pressing it forces Google Maps as the base (roads are
+        // clearest there), shows the road-owner overlay + its legend, and
+        // remembers the previous base. Pressing again hides the overlay and
+        // restores whatever base was active before.
+        // Road icon (inline SVG, uses currentColor so it inverts when active).
+        const ROAD_ICON = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" ' +
+            'stroke="currentColor" stroke-width="2" stroke-linecap="round">' +
+            '<path d="M7 3 5 21M17 3l2 18M12 4v3M12 10.5v3M12 17v3"/></svg>';
 
         let roadOwnersActive = false;
         let preToggleBase = null;
-        roadBtn.addEventListener('click', function () {
+        let roadLink = null;
+
+        function toggleRoadOwners() {
             roadOwnersActive = !roadOwnersActive;
             if (roadOwnersActive) {
                 preToggleBase = currentBase;
@@ -288,16 +291,39 @@
                 roadOwners.addTo(map);
                 roadOwners.bringToFront();
                 ownerLegend.addTo(map);
-                roadBtn.textContent = 'Piilota tiestön omistajat';
-                roadBtn.classList.add('active');
+                if (roadLink) {
+                    roadLink.title = 'Piilota tiestön omistajat';
+                    roadLink.classList.add('active');
+                }
             } else {
                 if (map.hasLayer(roadOwners)) { map.removeLayer(roadOwners); }
                 map.removeControl(ownerLegend);
                 if (preToggleBase) { setBase(preToggleBase); }
-                roadBtn.textContent = 'Näytä tiestön omistajat';
-                roadBtn.classList.remove('active');
+                if (roadLink) {
+                    roadLink.title = 'Näytä tiestön omistajat';
+                    roadLink.classList.remove('active');
+                }
+            }
+        }
+
+        const RoadControl = L.Control.extend({
+            options: { position: 'topright' },
+            onAdd: function () {
+                const container = L.DomUtil.create('div', 'leaflet-control kp-road-control');
+                roadLink = L.DomUtil.create('a', '', container);
+                roadLink.href = '#';
+                roadLink.title = 'Näytä tiestön omistajat';
+                roadLink.setAttribute('aria-label', 'Tiestön omistajat');
+                roadLink.innerHTML = ROAD_ICON;
+                L.DomEvent.disableClickPropagation(container);
+                L.DomEvent.on(roadLink, 'click', function (e) {
+                    L.DomEvent.preventDefault(e);
+                    toggleRoadOwners();
+                });
+                return container;
             }
         });
+        map.addControl(new RoadControl());
 
         function addRange(latlng) {
             for (let r = 1; r <= 161; r += 10) {
