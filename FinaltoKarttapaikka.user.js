@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Final to karttapaikka + reviewer map
 // @namespace    http://tampermonkey.net/
-// @version      0.71
+// @version      0.72
 // @description  Add Kansalaisen Karttapaikka links and an interactive MML/OSM/Google map (waypoints, range rings, road-owner overlay) to the geocache review page
 // @author       Veli-Pekka Eloranta
 // @match        https://*.geocaching.com/*
@@ -143,9 +143,13 @@
             'background-image:url(https://unpkg.com/leaflet@1.9.4/dist/images/layers-2x.png);background-size:26px 26px;}' +
             '.kp-legend{background:rgba(255,255,255,0.85);padding:4px 6px;border:1px solid #ccc;border-radius:4px;}' +
             '.kp-legend img{display:block;}' +
-            '.kp-road-control{background:#fff;border-radius:4px;box-shadow:0 1px 5px rgba(0,0,0,0.4);}' +
+            // Match the layer-control's size in both normal and Leaflet's
+            // "touch" mode (where Leaflet scales its own controls 36->44px).
+            '.kp-road-control{background:#fff;border-radius:5px;box-shadow:0 1px 5px rgba(0,0,0,0.4);}' +
+            '.leaflet-touch .kp-road-control{border:2px solid rgba(0,0,0,0.2);box-shadow:none;}' +
             '.kp-road-control a{width:36px;height:36px;display:flex;align-items:center;' +
-            'justify-content:center;color:#333;cursor:pointer;border-radius:4px;}' +
+            'justify-content:center;color:#333;cursor:pointer;border-radius:5px;}' +
+            '.leaflet-touch .kp-road-control a{width:44px;height:44px;}' +
             '.kp-road-control a.active{background:#4a90d9;color:#fff;}');
 
         // Insert the map container in a sensible place on the review page
