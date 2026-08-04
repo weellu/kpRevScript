@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Final to karttapaikka + reviewer map
 // @namespace    http://tampermonkey.net/
-// @version      0.81
+// @version      0.82
 // @description  Add Kansalaisen Karttapaikka links and an interactive MML/OSM/Google map (waypoints, range rings, road-owner overlay) to the geocache review page
 // @author       Veli-Pekka Eloranta
 // @match        https://*.geocaching.com/*
@@ -155,7 +155,10 @@
             // thickening (drop-shadow), since the server blocks custom styling.
             '.kp-cadastral{filter:brightness(0) saturate(100%) invert(15%) sepia(98%) ' +
             'saturate(7480%) hue-rotate(2deg) brightness(100%) contrast(118%) ' +
-            'drop-shadow(0 0 0.5px #ff0000);}');
+            'drop-shadow(0 0 0.5px #ff0000);}' +
+            '.kp-measure-tip{background:#fff;border:1px solid #4dabf7;color:#0b60b0;' +
+            'font-weight:bold;padding:1px 6px;border-radius:3px;box-shadow:0 1px 3px rgba(0,0,0,0.3);}' +
+            '.kp-measure-tip:before{display:none;}');
 
         // Insert the map container in a sensible place on the review page
         const mapDiv = document.createElement('div');
@@ -397,6 +400,92 @@
             }
         });
         map.addControl(new CadControl());
+
+        // --- Distance measurement tool (below the cadastral button) ------
+        // Measures from the cache zero-point. Activate -> a light-blue
+        // rubber-band line follows the cursor with a live distance tooltip.
+        // Click the map -> the line locks (stays) and measuring ends. Press
+        // the button again -> clears the old line and starts a new measurement.
+        const MEASURE_ICON = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" ' +
+            'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+            '<path d="M14.5 2.5 21.5 9.5 9.5 21.5 2.5 14.5z"/>' +
+            '<path d="M7 11l1.5 1.5M10 8l1.5 1.5M13 5l1.5 1.5"/></svg>';
+
+        const measureAnchor = L.latLng(latitude, longitude);
+        let measureActive = false;
+        let measureLine = null;
+        let measureTip = null;
+        let measLink = null;
+
+        function fmtDist(m) {
+            return m < 1000 ? Math.round(m) + ' m' : (m / 1000).toFixed(2) + ' km';
+        }
+        function clearMeasure() {
+            if (measureLine) { map.removeLayer(measureLine); measureLine = null; }
+            if (measureTip) { map.removeLayer(measureTip); measureTip = null; }
+        }
+        function measureUpdate(to) {
+            if (!measureLine) {
+                measureLine = L.polyline([measureAnchor, to], {
+                    color: '#4dabf7', weight: 3, opacity: 0.9, dashArray: '6,6'
+                }).addTo(map);
+            } else {
+                measureLine.setLatLngs([measureAnchor, to]);
+            }
+            const content = fmtDist(map.distance(measureAnchor, to));
+            if (!measureTip) {
+                measureTip = L.tooltip({ permanent: true, direction: 'top', offset: [0, -6], className: 'kp-measure-tip' })
+                    .setLatLng(to).setContent(content);
+                measureTip.addTo(map);
+            } else {
+                measureTip.setLatLng(to).setContent(content);
+            }
+        }
+        function onMeasureMove(e) { measureUpdate(e.latlng); }
+        function onMeasureClick(e) {
+            measureUpdate(e.latlng);                       // place line/tooltip at click
+            if (measureLine) { measureLine.setStyle({ dashArray: null }); } // solid = locked
+            stopMeasureMode();                             // line + tooltip stay on the map
+        }
+        function stopMeasureMode() {
+            map.off('mousemove', onMeasureMove);
+            map.off('click', onMeasureClick);
+            map.getContainer().style.cursor = '';
+            measureActive = false;
+            if (measLink) { measLink.classList.remove('active'); measLink.title = 'Mittaa etäisyys'; }
+        }
+        function toggleMeasure() {
+            if (measureActive) {           // pressing while measuring = cancel + clear
+                stopMeasureMode();
+                clearMeasure();
+                return;
+            }
+            clearMeasure();                // fresh start: reset any previous line
+            measureActive = true;
+            if (measLink) { measLink.classList.add('active'); measLink.title = 'Lopeta / nollaa mittaus'; }
+            map.getContainer().style.cursor = 'crosshair';
+            map.on('mousemove', onMeasureMove);
+            map.on('click', onMeasureClick);
+        }
+
+        const MeasureControl = L.Control.extend({
+            options: { position: 'topright' },
+            onAdd: function () {
+                const container = L.DomUtil.create('div', 'leaflet-control kp-road-control');
+                measLink = L.DomUtil.create('a', '', container);
+                measLink.href = '#';
+                measLink.title = 'Mittaa etäisyys';
+                measLink.setAttribute('aria-label', 'Mittaa etäisyys');
+                measLink.innerHTML = MEASURE_ICON;
+                L.DomEvent.disableClickPropagation(container);
+                L.DomEvent.on(measLink, 'click', function (e) {
+                    L.DomEvent.preventDefault(e);
+                    toggleMeasure();
+                });
+                return container;
+            }
+        });
+        map.addControl(new MeasureControl());
 
         function addRange(latlng) {
             for (let r = 1; r <= 161; r += 10) {
