@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Enhanced Litmus View
 // @namespace    http://tampermonkey.net/
-// @version      0.6
+// @version      0.7
 // @description  Add MML/OSM/Google map layers, road-owner & cadastral overlays, distance measurement and a WGS84 DDM coordinate picker to the reviewer Litmus Test page
 // @author       Veli-Pekka Eloranta
 // @match        https://admin.geocaching.com/LitmusTest/*
@@ -30,6 +30,7 @@
     // ---------------------------------------------------------------------
     const KEY_STORE = 'mml_api_key';
     const PROMPTED_STORE = 'mml_api_key_prompted';
+    const FILTER_STORE = 'litmus_hidden_categories'; // persisted filter selections
     let apiKey = GM_getValue(KEY_STORE, '');
 
     GM_registerMenuCommand('Set MML API key', function () {
@@ -117,16 +118,30 @@
     function pinIcon(typeID) {
         return L.icon({ iconUrl: WPT_PIN + typeID + '.png', iconSize: [20, 23], iconAnchor: [10, 23], popupAnchor: [0, -20] });
     }
+    const WP_TYPES = { 217: 'Parking Area', 218: 'Question to Answer', 219: 'Stages of a Multicache', 220: 'Final Location', 221: 'Trailhead', 452: 'Reference Point' };
+    function googleMapsLink(lat, lng) { return 'https://www.google.com/maps?q=' + lat + ',' + lng; }
     function pointPopup(p) {
         const lat = p.latLng[0], lng = p.latLng[1];
+        const isWaypoint = !!(p.parentCacheGCCode || p.refName);
         const gc = p.gcCode || p.parentCacheGCCode || '';
+        const cacheName = isWaypoint ? (p.parentCacheName || 'Kätkö') : (p.name || 'Kätkö');
+        const css = String(p.css || p.parentCacheCSS || '');
+        const archived = /Archived/i.test(css) || !!p.isArchived || !!p.parentCacheIsArchived;
+        const disabled = /Disabled/i.test(css) && !archived;
         const date = p.localizedDateCreate || p.parentCacheLocalizedDateCreate || '';
-        let html = '<b>' + escapeHtml(p.name || 'Piste') + '</b>';
-        if (gc) { html += ' (' + escapeHtml(gc) + ')'; }
+
+        // Cache name -> link to its listing; archived = struck through, disabled = italic.
+        let name = escapeHtml(cacheName);
+        if (gc) { name = '<a target="_blank" href="https://coord.info/' + encodeURIComponent(gc) + '">' + name + '</a>'; }
+        if (archived) { name = '<s>' + name + '</s>'; }
+        else if (disabled) { name = '<i>' + name + '</i>'; }
+
+        let html = '<b>' + name + '</b>' + (gc ? ' <small>(' + escapeHtml(gc) + ')</small>' : '');
+        if (isWaypoint) { html += '<br>' + escapeHtml(p.name || WP_TYPES[p.typeID] || 'Waypoint'); }
         html += '<br>' + fmtCoord(lat, lng);
         if (date) { html += '<br>' + escapeHtml(date); }
-        if (p.isArchived) { html += '<br><i>Arkistoitu</i>'; }
-        html += '<br><a target="_blank" href="' + karttapaikkaLink(lat, lng) + '">Karttapaikka</a>';
+        html += '<br><a target="_blank" href="' + karttapaikkaLink(lat, lng) + '">Karttapaikka</a>' +
+            ' · <a target="_blank" href="' + googleMapsLink(lat, lng) + '">Google Maps</a>';
         return html;
     }
 
@@ -193,7 +208,7 @@
             document.querySelector('#map');
         const title = document.createElement('div');
         title.className = 'kp-map-title';
-        title.textContent = 'Läheisyyskartta by Descarted';
+        title.textContent = 'Enhanced Proximity Map by Descarted';
         const wrap = document.createElement('div');
         wrap.className = 'kp-wrap';
         const mapDiv = document.createElement('div');
@@ -546,19 +561,23 @@
             { key: 'pass', label: 'PASS' },
             { key: 'warning', label: 'Warning' }
         ];
-        const hideCat = {};
+        // Filter selections persist across caches and refreshes.
+        let stored = {};
+        try { stored = GM_getValue(FILTER_STORE, {}) || {}; } catch (e) { stored = {}; }
+        const hideCat = Object.assign({}, stored);
         const filterBar = document.createElement('div');
         filterBar.id = 'kp-filters';
         FILTERS.forEach(function (f) {
             const count = collected.others.filter(function (p) { return p._cats && p._cats[f.key]; }).length;
             const btn = document.createElement('button');
             btn.type = 'button';
-            btn.className = 'kp-filter';
+            btn.className = 'kp-filter' + (hideCat[f.key] ? ' kp-off' : '');
             btn.textContent = f.label + ' (' + count + ')';
             btn.title = 'Piilota kartalta/listasta: ' + f.label;
             btn.addEventListener('click', function () {
                 hideCat[f.key] = !hideCat[f.key];
                 btn.classList.toggle('kp-off', !!hideCat[f.key]);
+                try { GM_setValue(FILTER_STORE, hideCat); } catch (e) { /* ignore */ }
                 applyFilters();
             });
             filterBar.appendChild(btn);
@@ -609,6 +628,7 @@
             });
             if (neighbourHeader) { neighbourHeader.textContent = 'Naapurit (' + visible + '/' + collected.others.length + ')'; }
         }
+        applyFilters(); // apply any persisted selections on load
 
         // The map lives in a new flex layout; make sure Leaflet re-measures.
         setTimeout(function () { map.invalidateSize(); }, 0);
