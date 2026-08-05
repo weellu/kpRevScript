@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Enhanced Litmus View
 // @namespace    http://tampermonkey.net/
-// @version      0.9
+// @version      0.10
 // @description  Add MML/OSM/Google map layers, road-owner & cadastral overlays, distance measurement and a WGS84 DDM coordinate picker to the reviewer Litmus Test page
 // @author       Veli-Pekka Eloranta
 // @match        https://admin.geocaching.com/LitmusTest/*
@@ -95,6 +95,30 @@
     const WPT_PIN = 'https://www.geocaching.com/images/wpttypes/pins/';
     function pageWin() { try { return (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window; } catch (e) { return window; } }
     function getJsonData() { try { return pageWin().LitmusTest.jsonData; } catch (e) { return null; } }
+
+    // Find the page's Google Maps instance (bounded deep search of the app
+    // object then window) so we can nudge it after un-hiding the original map.
+    function findGoogleMap() {
+        const w = pageWin();
+        const g = w.google;
+        if (!g || !g.maps || !g.maps.Map) return null;
+        const seen = new Set(); let found = null, n = 0;
+        function rec(o, d) {
+            if (found || n > 20000 || d > 6 || !o || typeof o !== 'object' || seen.has(o)) return;
+            seen.add(o); n++;
+            try { if (o instanceof g.maps.Map) { found = o; return; } } catch (e) { }
+            let ks; try { ks = Object.keys(o); } catch (e) { return; }
+            for (let i = 0; i < ks.length; i++) {
+                const k = ks[i];
+                if (k === 'self' || k === 'window' || k === 'top' || k === 'parent' || k === 'frames' || k === 'document' || k === 'ownerDocument') continue;
+                let v; try { v = o[k]; } catch (e) { continue; }
+                if (v && typeof v === 'object' && !(typeof Node !== 'undefined' && v instanceof Node) && !(typeof Window !== 'undefined' && v instanceof Window)) rec(v, d + 1);
+            }
+        }
+        try { rec(w.LitmusTest || {}, 0); } catch (e) { }
+        if (!found) { try { rec(w, 0); } catch (e) { } }
+        return found;
+    }
     function validLL(p) {
         return p && Array.isArray(p.latLng) && p.latLng.length >= 2 &&
             typeof p.latLng[0] === 'number' && typeof p.latLng[1] === 'number';
@@ -228,7 +252,22 @@
             const nowHidden = origEls.length && origEls[0].style.display === 'none';
             origEls.forEach(function (el) { el.style.display = nowHidden ? '' : 'none'; });
             origToggle.textContent = nowHidden ? 'Piilota alkuperäinen kartta' : 'Näytä alkuperäinen kartta';
-            if (nowHidden) { window.dispatchEvent(new Event('resize')); } // let Google Maps re-layout
+            if (nowHidden) {
+                // Google Maps only draws one tile after being un-hidden; nudge
+                // the real map instance (a 1 px pan + back = a "move") to reload.
+                setTimeout(function () {
+                    try {
+                        const gmap = findGoogleMap();
+                        const g = pageWin().google;
+                        if (gmap) {
+                            if (g && g.maps && g.maps.event) { g.maps.event.trigger(gmap, 'resize'); }
+                            if (gmap.panBy) { gmap.panBy(1, 1); gmap.panBy(-1, -1); }
+                        } else {
+                            window.dispatchEvent(new Event('resize'));
+                        }
+                    } catch (e) { window.dispatchEvent(new Event('resize')); }
+                }, 100);
+            }
         });
         title.appendChild(origToggle);
         const wrap = document.createElement('div');
