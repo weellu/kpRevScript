@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Enhanced Litmus View
 // @namespace    http://tampermonkey.net/
-// @version      0.7
+// @version      0.8
 // @description  Add MML/OSM/Google map layers, road-owner & cadastral overlays, distance measurement and a WGS84 DDM coordinate picker to the reviewer Litmus Test page
 // @author       Veli-Pekka Eloranta
 // @match        https://admin.geocaching.com/LitmusTest/*
@@ -115,8 +115,8 @@
         const cacheLL = (data && validLL(data.ourCache)) ? data.ourCache.latLng : (ours[0] ? ours[0].latLng : null);
         return { ours: ours, others: others, cacheLL: cacheLL };
     }
-    function pinIcon(typeID) {
-        return L.icon({ iconUrl: WPT_PIN + typeID + '.png', iconSize: [20, 23], iconAnchor: [10, 23], popupAnchor: [0, -20] });
+    function pinIcon(typeID, cls) {
+        return L.icon({ iconUrl: WPT_PIN + typeID + '.png', iconSize: [20, 23], iconAnchor: [10, 23], popupAnchor: [0, -20], className: cls || '' });
     }
     const WP_TYPES = { 217: 'Parking Area', 218: 'Question to Answer', 219: 'Stages of a Multicache', 220: 'Final Location', 221: 'Trailhead', 452: 'Reference Point' };
     function googleMapsLink(lat, lng) { return 'https://www.google.com/maps?q=' + lat + ',' + lng; }
@@ -176,6 +176,10 @@
             '.kp-list-row img{width:16px;height:16px;flex:0 0 16px;object-fit:contain;}' +
             '.kp-list-row small{color:#888;}' +
             '.kp-list-row.kp-arch{opacity:0.55;}' +
+            // Marker highlight tints: reviewed=gold, warning=red, archived=grey.
+            '.kp-hl-gold{filter:drop-shadow(0 0 3px #f59f00) drop-shadow(0 0 3px #f59f00);}' +
+            '.kp-hl-red{filter:drop-shadow(0 0 3px #e03131) drop-shadow(0 0 3px #e03131);}' +
+            '.kp-hl-grey{filter:grayscale(100%) opacity(0.55);}' +
             '.kp-map-title{font-weight:bold;margin:12px 0 2px;}' +
             '.leaflet-control-layers-toggle{' +
             'background-image:url(https://unpkg.com/leaflet@1.9.4/dist/images/layers.png);}' +
@@ -252,7 +256,7 @@
             baseMaps['Maastokartta (MML)'] = maastokartta;
             baseMaps['Taustakartta (MML)'] = taustakartta;
             baseMaps['Ilmakuva (MML)'] = ortokuva;
-            defaultLayer = maastokartta;
+            defaultLayer = taustakartta;
             let fellBack = false;
             [maastokartta, taustakartta, ortokuva].forEach(function (layer) {
                 layer.on('tileerror', function () {
@@ -520,19 +524,19 @@
             const ll = L.latLng(p.latLng[0], p.latLng[1]);
             p._ll = ll;
             measurePoints.push(ll);
+            if (!isOurs) { p._cats = neighbourCats(p); }
 
-            // Highlight the reviewed cache's own points with a golden halo.
-            if (isOurs) {
-                L.circleMarker(ll, { radius: 12, color: '#f59f00', weight: 2, fillColor: '#ffd43b', fillOpacity: 0.5, interactive: false }).addTo(map);
-            } else {
-                p._cats = neighbourCats(p);
-            }
+            // Highlight tint: reviewed = gold, warning (saturation) = red,
+            // archived = grey, everything else normal.
+            const cls = isOurs ? 'kp-hl-gold'
+                : (p._cats && p._cats.warning) ? 'kp-hl-red'
+                : (p._cats && p._cats.archived) ? 'kp-hl-grey' : '';
 
             let marker;
             if (typeof p.typeID === 'number') {
-                marker = L.marker(ll, { icon: pinIcon(p.typeID), opacity: p.isArchived ? 0.55 : 1 });
+                marker = L.marker(ll, { icon: pinIcon(p.typeID, cls) });
             } else if (p._iconUrl) {
-                marker = L.marker(ll, { icon: L.icon({ iconUrl: p._iconUrl, iconSize: [16, 16], iconAnchor: [8, 8], popupAnchor: [0, -8] }) });
+                marker = L.marker(ll, { icon: L.icon({ iconUrl: p._iconUrl, iconSize: [16, 16], iconAnchor: [8, 8], popupAnchor: [0, -8], className: cls }) });
             } else {
                 marker = L.circleMarker(ll, { radius: 6, color: isOurs ? '#c92a2a' : '#1971c2', weight: 2, fillOpacity: 0.85 });
             }
