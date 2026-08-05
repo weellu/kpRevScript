@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Enhanced Litmus View
 // @namespace    http://tampermonkey.net/
-// @version      0.4
+// @version      0.5
 // @description  Add MML/OSM/Google map layers, road-owner & cadastral overlays, distance measurement and a WGS84 DDM coordinate picker to the reviewer Litmus Test page
 // @author       Veli-Pekka Eloranta
 // @match        https://admin.geocaching.com/LitmusTest/*
@@ -464,12 +464,13 @@
             if (items) {
                 return items.some(function (r) {
                     if (typeof r.distanceInMeters !== 'number' || r.distanceInMeters > 161) return false;
+                    if (r.otherIsArchived) return false; // archived neighbours don't count
                     return p._isCache ? (r.ourCacheID === p.id && r.ourWaypointID == null) : (r.ourWaypointID === p.id);
                 });
             }
-            // Fallback: measure against the known neighbour points.
+            // Fallback: measure against the known (non-archived) neighbour points.
             const ll = L.latLng(p.latLng[0], p.latLng[1]);
-            return collected.others.some(function (o) { return ll.distanceTo(L.latLng(o.latLng[0], o.latLng[1])) <= 161; });
+            return collected.others.some(function (o) { return !o.isArchived && ll.distanceTo(L.latLng(o.latLng[0], o.latLng[1])) <= 161; });
         }
 
         // --- Markers -----------------------------------------------------
@@ -479,6 +480,11 @@
             const ll = L.latLng(p.latLng[0], p.latLng[1]);
             p._ll = ll;
             measurePoints.push(ll);
+
+            // Highlight the reviewed cache's own points with a golden halo.
+            if (isOurs) {
+                L.circleMarker(ll, { radius: 12, color: '#f59f00', weight: 2, fillColor: '#ffd43b', fillOpacity: 0.5, interactive: false }).addTo(map);
+            }
 
             let marker;
             if (typeof p.typeID === 'number') {
