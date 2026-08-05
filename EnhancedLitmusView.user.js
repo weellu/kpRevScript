@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Enhanced Litmus View
 // @namespace    http://tampermonkey.net/
-// @version      0.1
+// @version      0.3
 // @description  Add MML/OSM/Google map layers, road-owner & cadastral overlays, distance measurement and a WGS84 DDM coordinate picker to the reviewer Litmus Test page
 // @author       Veli-Pekka Eloranta
 // @match        https://admin.geocaching.com/LitmusTest/*
@@ -14,6 +14,7 @@
 // @grant        GM_getResourceText
 // @grant        GM_addStyle
 // @grant        GM_setClipboard
+// @grant        unsafeWindow
 // @run-at       document-idle
 // @updateURL    https://github.com/weellu/kpRevScript/raw/main/EnhancedLitmusView.user.js
 // @downloadURL  https://github.com/weellu/kpRevScript/raw/main/EnhancedLitmusView.user.js
@@ -75,20 +76,67 @@
         document.querySelectorAll('[data-lat][data-lng]').forEach(function (a) {
             const lat = parseFloat(a.getAttribute('data-lat'));
             const lng = parseFloat(a.getAttribute('data-lng'));
-            if (!isNaN(lat) && !isNaN(lng)) {
-                pts.push({ lat: lat, lng: lng, label: (a.textContent || '').trim() });
-            }
+            if (isNaN(lat) || isNaN(lng)) return;
+            // Each anchor carries the point's own geocaching type icon.
+            const img = a.querySelector('img') || (a.closest('tr,li,div') || a).querySelector('img');
+            pts.push({
+                lat: lat, lng: lng,
+                label: (a.textContent || '').trim(),
+                icon: img ? img.src : null
+            });
         });
         return pts;
+    }
+
+    // The Litmus page exposes the full map data as window.LitmusTest.jsonData:
+    //   ourCache (obj), ourWaypoints (array), otherCaches (obj by id),
+    //   otherWaypoints (obj by id). Each point has latLng:[lat,lng] + typeID.
+    const WPT_PIN = 'https://www.geocaching.com/images/wpttypes/pins/';
+    function pageWin() { try { return (typeof unsafeWindow !== 'undefined') ? unsafeWindow : window; } catch (e) { return window; } }
+    function getJsonData() { try { return pageWin().LitmusTest.jsonData; } catch (e) { return null; } }
+    function validLL(p) {
+        return p && Array.isArray(p.latLng) && p.latLng.length >= 2 &&
+            typeof p.latLng[0] === 'number' && typeof p.latLng[1] === 'number';
+    }
+    // Returns { ours:[], others:[], cacheLL:[lat,lng] }.
+    function collectPoints() {
+        const data = getJsonData();
+        const ours = [], others = [];
+        if (data) {
+            if (validLL(data.ourCache)) ours.push(Object.assign({ _ours: true }, data.ourCache));
+            if (Array.isArray(data.ourWaypoints)) data.ourWaypoints.forEach(function (p) { if (validLL(p)) ours.push(Object.assign({ _ours: true }, p)); });
+            if (data.otherCaches) Object.keys(data.otherCaches).forEach(function (k) { if (validLL(data.otherCaches[k])) others.push(data.otherCaches[k]); });
+            if (data.otherWaypoints) Object.keys(data.otherWaypoints).forEach(function (k) { if (validLL(data.otherWaypoints[k])) others.push(data.otherWaypoints[k]); });
+        } else {
+            // Fallback: the reviewed cache's points from the [data-lat] anchors.
+            readPoints().forEach(function (p) { ours.push({ _ours: true, latLng: [p.lat, p.lng], name: p.label, _iconUrl: p.icon }); });
+        }
+        const cacheLL = (data && validLL(data.ourCache)) ? data.ourCache.latLng : (ours[0] ? ours[0].latLng : null);
+        return { ours: ours, others: others, cacheLL: cacheLL };
+    }
+    function pinIcon(typeID) {
+        return L.icon({ iconUrl: WPT_PIN + typeID + '.png', iconSize: [20, 23], iconAnchor: [10, 23], popupAnchor: [0, -20] });
+    }
+    function pointPopup(p) {
+        const lat = p.latLng[0], lng = p.latLng[1];
+        const gc = p.gcCode || p.parentCacheGCCode || '';
+        const date = p.localizedDateCreate || p.parentCacheLocalizedDateCreate || '';
+        let html = '<b>' + escapeHtml(p.name || 'Piste') + '</b>';
+        if (gc) { html += ' (' + escapeHtml(gc) + ')'; }
+        html += '<br>' + fmtCoord(lat, lng);
+        if (date) { html += '<br>' + escapeHtml(date); }
+        if (p.isArchived) { html += '<br><i>Arkistoitu</i>'; }
+        html += '<br><a target="_blank" href="' + karttapaikkaLink(lat, lng) + '">Karttapaikka</a>';
+        return html;
     }
 
     // ---------------------------------------------------------------------
     // Build the enhanced map
     // ---------------------------------------------------------------------
     function buildMap() {
-        const points = readPoints();
-        if (!points.length) return;
-        const cache = points[0];
+        const collected = collectPoints();
+        if (!collected.cacheLL) return;
+        const cacheLL = collected.cacheLL;
 
         // Leaflet CSS (fetched by the userscript manager, CSP-safe)
         try { GM_addStyle(GM_getResourceText('leafletCss')); }
@@ -187,7 +235,7 @@
         baseMaps['Google Maasto'] = gTerrain;
 
         defaultLayer.addTo(map);
-        map.setView([cache.lat, cache.lng], 15);
+        map.setView([cacheLL[0], cacheLL[1]], 15);
 
         let currentBase = defaultLayer;
         map.on('baselayerchange', function (e) {
@@ -393,33 +441,51 @@
             map.on('click', onCoordClick);
         });
 
-        // --- Markers for the cache + waypoints --------------------------
-        const bounds = L.latLngBounds([]);
-        points.forEach(function (p, idx) {
-            const ll = L.latLng(p.lat, p.lng);
+        // --- Markers -----------------------------------------------------
+        // Draw each point with its own geocaching type pin. The reviewed
+        // cache's own points also get a 161 m proximity circle.
+        const ourBounds = L.latLngBounds([]);
+
+        function addPoint(p, isOurs) {
+            const ll = L.latLng(p.latLng[0], p.latLng[1]);
             measurePoints.push(ll);
-            bounds.extend(ll);
-            const isCache = idx === 0;
-            const marker = L.circleMarker(ll, {
-                radius: isCache ? 7 : 6,
-                color: isCache ? '#c92a2a' : '#1971c2',
-                weight: 2,
-                fillColor: isCache ? '#ff6b6b' : '#4dabf7',
-                fillOpacity: 0.85
-            }).addTo(map);
-            marker.bindPopup(
-                '<b>' + escapeHtml(p.label || (isCache ? 'Kätkö' : 'Reittipiste')) + '</b><br>' +
-                fmtCoord(p.lat, p.lng) + '<br>' +
-                '<a target="_blank" href="' + karttapaikkaLink(p.lat, p.lng) + '">Karttapaikka</a>');
-        });
-        if (points.length > 1) { map.fitBounds(bounds.pad(0.3)); }
+
+            let marker;
+            if (typeof p.typeID === 'number') {
+                marker = L.marker(ll, { icon: pinIcon(p.typeID), opacity: p.isArchived ? 0.55 : 1 });
+            } else if (p._iconUrl) {
+                marker = L.marker(ll, { icon: L.icon({ iconUrl: p._iconUrl, iconSize: [16, 16], iconAnchor: [8, 8], popupAnchor: [0, -8] }) });
+            } else {
+                marker = L.circleMarker(ll, { radius: 6, color: isOurs ? '#c92a2a' : '#1971c2', weight: 2, fillOpacity: 0.85 });
+            }
+            marker.addTo(map).bindPopup(pointPopup(p));
+
+            if (isOurs) {
+                ourBounds.extend(ll);
+                L.circle(ll, { radius: 161, color: '#e03131', weight: 1.5, opacity: 0.7, fill: false }).addTo(map);
+            }
+        }
+
+        collected.others.forEach(function (p) { addPoint(p, false); });
+        collected.ours.forEach(function (p) { addPoint(p, true); });
+
+        // Frame the reviewed cache's points (neighbours stay pannable around).
+        if (ourBounds.isValid()) { map.fitBounds(ourBounds.pad(0.8), { maxZoom: 16 }); }
+        else { map.setView([cacheLL[0], cacheLL[1]], 16); }
     }
 
     // ---------------------------------------------------------------------
     // Init
     // ---------------------------------------------------------------------
     function init() {
-        if (!readPoints().length) return;
+        if (init._done) return;
+        // jsonData is server-rendered but may lag slightly; retry briefly.
+        if (!getJsonData() && !readPoints().length) {
+            init._tries = (init._tries || 0) + 1;
+            if (init._tries <= 20) { setTimeout(init, 300); }
+            return;
+        }
+        init._done = true;
         if (!apiKey && !GM_getValue(PROMPTED_STORE, false)) {
             const v = prompt(
                 'Enter your MML API key to use Karttapaikka maps.\n' +
