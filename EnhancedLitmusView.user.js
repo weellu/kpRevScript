@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Enhanced Litmus View
 // @namespace    http://tampermonkey.net/
-// @version      0.5
+// @version      0.6
 // @description  Add MML/OSM/Google map layers, road-owner & cadastral overlays, distance measurement and a WGS84 DDM coordinate picker to the reviewer Litmus Test page
 // @author       Veli-Pekka Eloranta
 // @match        https://admin.geocaching.com/LitmusTest/*
@@ -105,8 +105,8 @@
         if (data) {
             if (validLL(data.ourCache)) ours.push(Object.assign({ _ours: true, _isCache: true }, data.ourCache));
             if (Array.isArray(data.ourWaypoints)) data.ourWaypoints.forEach(function (p) { if (validLL(p)) ours.push(Object.assign({ _ours: true }, p)); });
-            if (data.otherCaches) Object.keys(data.otherCaches).forEach(function (k) { if (validLL(data.otherCaches[k])) others.push(data.otherCaches[k]); });
-            if (data.otherWaypoints) Object.keys(data.otherWaypoints).forEach(function (k) { if (validLL(data.otherWaypoints[k])) others.push(data.otherWaypoints[k]); });
+            if (data.otherCaches) Object.keys(data.otherCaches).forEach(function (k) { if (validLL(data.otherCaches[k])) others.push(Object.assign({}, data.otherCaches[k])); });
+            if (data.otherWaypoints) Object.keys(data.otherWaypoints).forEach(function (k) { if (validLL(data.otherWaypoints[k])) others.push(Object.assign({ _isWaypoint: true }, data.otherWaypoints[k])); });
         } else {
             // Fallback: the reviewed cache's points from the [data-lat] anchors.
             readPoints().forEach(function (p) { ours.push({ _ours: true, latLng: [p.lat, p.lng], name: p.label, _iconUrl: p.icon }); });
@@ -149,7 +149,12 @@
             '.kp-wrap{display:flex;gap:8px;margin:10px 0;align-items:stretch;}' +
             '#kp-map{height:500px;flex:1 1 auto;min-width:0;border:1px solid #ccc;}' +
             '#kp-list{flex:0 0 280px;height:500px;overflow-y:auto;border:1px solid #ccc;background:#fff;font-size:13px;}' +
-            '.kp-list-h{font-weight:bold;padding:5px 8px;background:#f0f0f0;border-bottom:1px solid #ddd;position:sticky;top:0;}' +
+            '#kp-filters{position:sticky;top:0;z-index:2;display:flex;flex-wrap:wrap;gap:4px;' +
+            'padding:6px;background:#fafafa;border-bottom:1px solid #ddd;}' +
+            '.kp-filter{font-size:11px;padding:2px 7px;border:1px solid #aaa;border-radius:11px;' +
+            'background:#fff;cursor:pointer;color:#333;}' +
+            '.kp-filter.kp-off{background:#eee;color:#aaa;text-decoration:line-through;border-color:#ccc;}' +
+            '.kp-list-h{font-weight:bold;padding:5px 8px;background:#f0f0f0;border-bottom:1px solid #ddd;}' +
             '.kp-list-row{display:flex;align-items:center;gap:6px;padding:4px 8px;text-decoration:none;' +
             'color:#222;border-bottom:1px solid #f0f0f0;cursor:pointer;}' +
             '.kp-list-row:hover{background:#eef6ff;}' +
@@ -188,7 +193,7 @@
             document.querySelector('#map');
         const title = document.createElement('div');
         title.className = 'kp-map-title';
-        title.textContent = 'Laajennettu kartta';
+        title.textContent = 'Läheisyyskartta by Descarted';
         const wrap = document.createElement('div');
         wrap.className = 'kp-wrap';
         const mapDiv = document.createElement('div');
@@ -456,21 +461,41 @@
             map.on('click', onCoordClick);
         });
 
-        // A reviewed point's 161 m circle is RED if a neighbour lies within
-        // 161 m of it (per the page's resultItems), otherwise GREEN.
-        function within161(p) {
+        // A reviewed point's 161 m circle is RED only when the Litmus test
+        // flags a real proximity conflict for that point (a non-PASS result).
+        // resultItems already encode what matters: only the cache coordinate,
+        // physical stages and finals count — virtual stages, parking, other
+        // waypoint types and archived neighbours are all PASS -> green.
+        function hasConflict(p) {
             const data = getJsonData();
             const items = (data && Array.isArray(data.resultItems)) ? data.resultItems : null;
             if (items) {
                 return items.some(function (r) {
-                    if (typeof r.distanceInMeters !== 'number' || r.distanceInMeters > 161) return false;
-                    if (r.otherIsArchived) return false; // archived neighbours don't count
+                    const nonPass = (typeof r.level === 'number' && r.level > 1) ||
+                        (r.levelLabel && String(r.levelLabel).toUpperCase() !== 'PASS');
+                    if (!nonPass) return false;
                     return p._isCache ? (r.ourCacheID === p.id && r.ourWaypointID == null) : (r.ourWaypointID === p.id);
                 });
             }
-            // Fallback: measure against the known (non-archived) neighbour points.
+            // Fallback only if resultItems is unavailable: geometric, non-archived.
             const ll = L.latLng(p.latLng[0], p.latLng[1]);
             return collected.others.some(function (o) { return !o.isArchived && ll.distanceTo(L.latLng(o.latLng[0], o.latLng[1])) <= 161; });
+        }
+
+        // Categorise a neighbour for the filter chips: archived/disabled/
+        // unpublished come from its css status string (space-separated),
+        // pass/warning from resultItems.levelLabel.
+        function neighbourCats(p) {
+            const css = String(p.css || p.parentCacheCSS || '');
+            const archived = /Archived/i.test(css) || !!p.isArchived || !!p.parentCacheIsArchived;
+            const disabled = /Disabled/i.test(css) && !archived;
+            const unpublished = /Unpublished/i.test(css);
+            const data = getJsonData();
+            const items = (data && Array.isArray(data.resultItems)) ? data.resultItems : [];
+            const rel = items.filter(function (r) { return p._isWaypoint ? (r.otherWaypointID === p.id) : (r.otherCacheID === p.id); });
+            let warning = false;
+            if (rel.length) { warning = rel.some(function (r) { return (r.level && r.level > 1) || (r.levelLabel && String(r.levelLabel).toUpperCase() !== 'PASS'); }); }
+            return { archived: archived, disabled: disabled, unpublished: unpublished, pass: rel.length ? !warning : false, warning: warning };
         }
 
         // --- Markers -----------------------------------------------------
@@ -484,6 +509,8 @@
             // Highlight the reviewed cache's own points with a golden halo.
             if (isOurs) {
                 L.circleMarker(ll, { radius: 12, color: '#f59f00', weight: 2, fillColor: '#ffd43b', fillOpacity: 0.5, interactive: false }).addTo(map);
+            } else {
+                p._cats = neighbourCats(p);
             }
 
             let marker;
@@ -499,7 +526,7 @@
 
             if (isOurs) {
                 ourBounds.extend(ll);
-                const colour = within161(p) ? '#e03131' : '#2f9e44';
+                const colour = hasConflict(p) ? '#e03131' : '#2f9e44';
                 L.circle(ll, { radius: 161, color: colour, weight: 1.5, opacity: 0.85, fill: false }).addTo(map);
             }
         }
@@ -511,13 +538,41 @@
         if (ourBounds.isValid()) { map.fitBounds(ourBounds.pad(0.8), { maxZoom: 16 }); }
         else { map.setView([cacheLL[0], cacheLL[1]], 16); }
 
-        // --- Components list (right of the map) --------------------------
-        function listSection(titleText, pts) {
+        // --- Filter chips (hide categories) + components list ------------
+        const FILTERS = [
+            { key: 'archived', label: 'Arkistoidut' },
+            { key: 'disabled', label: 'Hyllytetyt' },
+            { key: 'unpublished', label: 'Julkaisemattomat' },
+            { key: 'pass', label: 'PASS' },
+            { key: 'warning', label: 'Warning' }
+        ];
+        const hideCat = {};
+        const filterBar = document.createElement('div');
+        filterBar.id = 'kp-filters';
+        FILTERS.forEach(function (f) {
+            const count = collected.others.filter(function (p) { return p._cats && p._cats[f.key]; }).length;
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'kp-filter';
+            btn.textContent = f.label + ' (' + count + ')';
+            btn.title = 'Piilota kartalta/listasta: ' + f.label;
+            btn.addEventListener('click', function () {
+                hideCat[f.key] = !hideCat[f.key];
+                btn.classList.toggle('kp-off', !!hideCat[f.key]);
+                applyFilters();
+            });
+            filterBar.appendChild(btn);
+        });
+        listDiv.appendChild(filterBar);
+
+        let neighbourHeader = null;
+        function listSection(titleText, pts, isNeighbours) {
             if (!pts.length) return;
             const h = document.createElement('div');
             h.className = 'kp-list-h';
             h.textContent = titleText + ' (' + pts.length + ')';
             listDiv.appendChild(h);
+            if (isNeighbours) { neighbourHeader = h; }
             pts.forEach(function (p) {
                 const row = document.createElement('a');
                 row.className = 'kp-list-row' + (p.isArchived ? ' kp-arch' : '');
@@ -534,10 +589,26 @@
                     }
                 });
                 listDiv.appendChild(row);
+                p._listRow = row;
             });
         }
-        listSection('Tämä kätkö', collected.ours);
-        listSection('Naapurit', collected.others);
+        listSection('Tarkastettava kätkö', collected.ours, false);
+        listSection('Naapurit', collected.others, true);
+
+        // Hide/show neighbours (map + list) by the active filter categories.
+        function applyFilters() {
+            let visible = 0;
+            collected.others.forEach(function (p) {
+                const hide = FILTERS.some(function (f) { return hideCat[f.key] && p._cats && p._cats[f.key]; });
+                if (p._marker) {
+                    if (hide && map.hasLayer(p._marker)) { map.removeLayer(p._marker); }
+                    else if (!hide && !map.hasLayer(p._marker)) { map.addLayer(p._marker); }
+                }
+                if (p._listRow) { p._listRow.style.display = hide ? 'none' : ''; }
+                if (!hide) { visible++; }
+            });
+            if (neighbourHeader) { neighbourHeader.textContent = 'Naapurit (' + visible + '/' + collected.others.length + ')'; }
+        }
 
         // The map lives in a new flex layout; make sure Leaflet re-measures.
         setTimeout(function () { map.invalidateSize(); }, 0);
