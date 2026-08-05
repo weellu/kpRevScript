@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Enhanced Litmus View
 // @namespace    http://tampermonkey.net/
-// @version      0.3
+// @version      0.4
 // @description  Add MML/OSM/Google map layers, road-owner & cadastral overlays, distance measurement and a WGS84 DDM coordinate picker to the reviewer Litmus Test page
 // @author       Veli-Pekka Eloranta
 // @match        https://admin.geocaching.com/LitmusTest/*
@@ -103,7 +103,7 @@
         const data = getJsonData();
         const ours = [], others = [];
         if (data) {
-            if (validLL(data.ourCache)) ours.push(Object.assign({ _ours: true }, data.ourCache));
+            if (validLL(data.ourCache)) ours.push(Object.assign({ _ours: true, _isCache: true }, data.ourCache));
             if (Array.isArray(data.ourWaypoints)) data.ourWaypoints.forEach(function (p) { if (validLL(p)) ours.push(Object.assign({ _ours: true }, p)); });
             if (data.otherCaches) Object.keys(data.otherCaches).forEach(function (k) { if (validLL(data.otherCaches[k])) others.push(data.otherCaches[k]); });
             if (data.otherWaypoints) Object.keys(data.otherWaypoints).forEach(function (k) { if (validLL(data.otherWaypoints[k])) others.push(data.otherWaypoints[k]); });
@@ -146,7 +146,16 @@
             document.head.appendChild(l);
         }
         GM_addStyle(
-            '#kp-map{height:450px;margin:10px 0;border:1px solid #ccc;}' +
+            '.kp-wrap{display:flex;gap:8px;margin:10px 0;align-items:stretch;}' +
+            '#kp-map{height:500px;flex:1 1 auto;min-width:0;border:1px solid #ccc;}' +
+            '#kp-list{flex:0 0 280px;height:500px;overflow-y:auto;border:1px solid #ccc;background:#fff;font-size:13px;}' +
+            '.kp-list-h{font-weight:bold;padding:5px 8px;background:#f0f0f0;border-bottom:1px solid #ddd;position:sticky;top:0;}' +
+            '.kp-list-row{display:flex;align-items:center;gap:6px;padding:4px 8px;text-decoration:none;' +
+            'color:#222;border-bottom:1px solid #f0f0f0;cursor:pointer;}' +
+            '.kp-list-row:hover{background:#eef6ff;}' +
+            '.kp-list-row img{width:16px;height:16px;flex:0 0 16px;object-fit:contain;}' +
+            '.kp-list-row small{color:#888;}' +
+            '.kp-list-row.kp-arch{opacity:0.55;}' +
             '.kp-map-title{font-weight:bold;margin:12px 0 2px;}' +
             '.leaflet-control-layers-toggle{' +
             'background-image:url(https://unpkg.com/leaflet@1.9.4/dist/images/layers.png);}' +
@@ -180,14 +189,20 @@
         const title = document.createElement('div');
         title.className = 'kp-map-title';
         title.textContent = 'Laajennettu kartta';
+        const wrap = document.createElement('div');
+        wrap.className = 'kp-wrap';
         const mapDiv = document.createElement('div');
         mapDiv.id = 'kp-map';
+        const listDiv = document.createElement('div');
+        listDiv.id = 'kp-list';
+        wrap.appendChild(mapDiv);
+        wrap.appendChild(listDiv);
         if (anchor && anchor.parentNode) {
             anchor.parentNode.insertBefore(title, anchor.nextSibling);
-            title.parentNode.insertBefore(mapDiv, title.nextSibling);
+            title.parentNode.insertBefore(wrap, title.nextSibling);
         } else {
             document.body.insertBefore(title, document.body.firstChild);
-            document.body.insertBefore(mapDiv, title.nextSibling);
+            document.body.insertBefore(wrap, title.nextSibling);
         }
 
         const map = L.map('kp-map');
@@ -441,13 +456,28 @@
             map.on('click', onCoordClick);
         });
 
+        // A reviewed point's 161 m circle is RED if a neighbour lies within
+        // 161 m of it (per the page's resultItems), otherwise GREEN.
+        function within161(p) {
+            const data = getJsonData();
+            const items = (data && Array.isArray(data.resultItems)) ? data.resultItems : null;
+            if (items) {
+                return items.some(function (r) {
+                    if (typeof r.distanceInMeters !== 'number' || r.distanceInMeters > 161) return false;
+                    return p._isCache ? (r.ourCacheID === p.id && r.ourWaypointID == null) : (r.ourWaypointID === p.id);
+                });
+            }
+            // Fallback: measure against the known neighbour points.
+            const ll = L.latLng(p.latLng[0], p.latLng[1]);
+            return collected.others.some(function (o) { return ll.distanceTo(L.latLng(o.latLng[0], o.latLng[1])) <= 161; });
+        }
+
         // --- Markers -----------------------------------------------------
-        // Draw each point with its own geocaching type pin. The reviewed
-        // cache's own points also get a 161 m proximity circle.
         const ourBounds = L.latLngBounds([]);
 
         function addPoint(p, isOurs) {
             const ll = L.latLng(p.latLng[0], p.latLng[1]);
+            p._ll = ll;
             measurePoints.push(ll);
 
             let marker;
@@ -459,10 +489,12 @@
                 marker = L.circleMarker(ll, { radius: 6, color: isOurs ? '#c92a2a' : '#1971c2', weight: 2, fillOpacity: 0.85 });
             }
             marker.addTo(map).bindPopup(pointPopup(p));
+            p._marker = marker;
 
             if (isOurs) {
                 ourBounds.extend(ll);
-                L.circle(ll, { radius: 161, color: '#e03131', weight: 1.5, opacity: 0.7, fill: false }).addTo(map);
+                const colour = within161(p) ? '#e03131' : '#2f9e44';
+                L.circle(ll, { radius: 161, color: colour, weight: 1.5, opacity: 0.85, fill: false }).addTo(map);
             }
         }
 
@@ -472,6 +504,37 @@
         // Frame the reviewed cache's points (neighbours stay pannable around).
         if (ourBounds.isValid()) { map.fitBounds(ourBounds.pad(0.8), { maxZoom: 16 }); }
         else { map.setView([cacheLL[0], cacheLL[1]], 16); }
+
+        // --- Components list (right of the map) --------------------------
+        function listSection(titleText, pts) {
+            if (!pts.length) return;
+            const h = document.createElement('div');
+            h.className = 'kp-list-h';
+            h.textContent = titleText + ' (' + pts.length + ')';
+            listDiv.appendChild(h);
+            pts.forEach(function (p) {
+                const row = document.createElement('a');
+                row.className = 'kp-list-row' + (p.isArchived ? ' kp-arch' : '');
+                row.href = '#';
+                const iconUrl = (typeof p.typeID === 'number') ? (WPT_PIN + p.typeID + '.png') : (p._iconUrl || '');
+                const gc = p.gcCode || p.parentCacheGCCode || '';
+                row.innerHTML = (iconUrl ? '<img src="' + iconUrl + '">' : '') +
+                    '<span>' + escapeHtml(p.name || 'Piste') + (gc ? ' <small>' + escapeHtml(gc) + '</small>' : '') + '</span>';
+                row.addEventListener('click', function (e) {
+                    e.preventDefault();
+                    if (p._ll) {
+                        map.setView(p._ll, Math.max(map.getZoom(), 16));
+                        if (p._marker && p._marker.openPopup) { p._marker.openPopup(); }
+                    }
+                });
+                listDiv.appendChild(row);
+            });
+        }
+        listSection('Tämä kätkö', collected.ours);
+        listSection('Naapurit', collected.others);
+
+        // The map lives in a new flex layout; make sure Leaflet re-measures.
+        setTimeout(function () { map.invalidateSize(); }, 0);
     }
 
     // ---------------------------------------------------------------------
