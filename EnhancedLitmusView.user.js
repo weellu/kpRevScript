@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Enhanced Litmus View
 // @namespace    http://tampermonkey.net/
-// @version      0.8
+// @version      0.9
 // @description  Add MML/OSM/Google map layers, road-owner & cadastral overlays, distance measurement and a WGS84 DDM coordinate picker to the reviewer Litmus Test page
 // @author       Veli-Pekka Eloranta
 // @match        https://admin.geocaching.com/LitmusTest/*
@@ -181,6 +181,9 @@
             '.kp-hl-red{filter:drop-shadow(0 0 3px #e03131) drop-shadow(0 0 3px #e03131);}' +
             '.kp-hl-grey{filter:grayscale(100%) opacity(0.55);}' +
             '.kp-map-title{font-weight:bold;margin:12px 0 2px;}' +
+            '.kp-orig-toggle{margin-left:10px;font-size:12px;font-weight:normal;padding:2px 8px;' +
+            'cursor:pointer;border:1px solid #888;border-radius:4px;background:#f4f4f4;}' +
+            '.kp-orig-toggle:hover{background:#e8e8e8;}' +
             '.leaflet-control-layers-toggle{' +
             'background-image:url(https://unpkg.com/leaflet@1.9.4/dist/images/layers.png);}' +
             '.leaflet-retina .leaflet-control-layers-toggle{' +
@@ -205,14 +208,29 @@
             'background:#f4f4f4;font-size:13px;}' +
             '.kp-coord-copy:hover{background:#e8e8e8;}');
 
-        // Insert the map after the existing proximity (Google) map
+        // Insert the map after the existing proximity (Google) map, hide that
+        // original map by default, and offer a button to bring it back.
         const anchor =
             document.querySelector('.ProximityMap') ||
             document.querySelector('#map_canvas') ||
             document.querySelector('#map');
+        const origEls = [document.getElementById('map'), document.querySelector('.ProximityMap')].filter(Boolean);
+        origEls.forEach(function (el) { el.style.display = 'none'; });
+
         const title = document.createElement('div');
         title.className = 'kp-map-title';
-        title.textContent = 'Enhanced Proximity Map by Descarted';
+        title.appendChild(document.createTextNode('Enhanced Proximity Map by Descarted'));
+        const origToggle = document.createElement('button');
+        origToggle.type = 'button';
+        origToggle.className = 'kp-orig-toggle';
+        origToggle.textContent = 'Näytä alkuperäinen kartta';
+        origToggle.addEventListener('click', function () {
+            const nowHidden = origEls.length && origEls[0].style.display === 'none';
+            origEls.forEach(function (el) { el.style.display = nowHidden ? '' : 'none'; });
+            origToggle.textContent = nowHidden ? 'Piilota alkuperäinen kartta' : 'Näytä alkuperäinen kartta';
+            if (nowHidden) { window.dispatchEvent(new Event('resize')); } // let Google Maps re-layout
+        });
+        title.appendChild(origToggle);
         const wrap = document.createElement('div');
         wrap.className = 'kp-wrap';
         const mapDiv = document.createElement('div');
