@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Enhanced Litmus View
 // @namespace    http://tampermonkey.net/
-// @version      1.00
+// @version      1.01
 // @description  Add MML/OSM/Google map layers, road-owner & cadastral overlays, distance measurement and a WGS84 DDM coordinate picker to the reviewer Litmus Test page
 // @author       Veli-Pekka Eloranta
 // @match        https://admin.geocaching.com/LitmusTest/*
@@ -15,7 +15,7 @@
 // @grant        GM_addStyle
 // @grant        GM_setClipboard
 // @grant        unsafeWindow
-// @run-at       document-idle
+// @run-at       document-start
 // @updateURL    https://github.com/weellu/kpRevScript/raw/main/EnhancedLitmusView.user.js
 // @downloadURL  https://github.com/weellu/kpRevScript/raw/main/EnhancedLitmusView.user.js
 // ==/UserScript==
@@ -119,6 +119,38 @@
         if (!found) { try { rec(w, 0); } catch (e) { } }
         return found;
     }
+
+    // Capture the page's Google Map instance the moment it is created, by
+    // wrapping google.maps.Map before the page's map bundle runs (document-
+    // start). Stored on the page window as __kpGoogleMap.
+    (function installMapCapture() {
+        const w = pageWin();
+        let tries = 0;
+        function tryWrap() {
+            try {
+                const gm = w.google && w.google.maps;
+                if (gm && gm.Map && !gm.Map.__kpWrapped) {
+                    const Orig = gm.Map;
+                    function KpMap() {
+                        const inst = new Orig(...arguments);
+                        try { w.__kpGoogleMap = inst; } catch (e) { }
+                        return inst;
+                    }
+                    KpMap.prototype = Orig.prototype;
+                    Object.getOwnPropertyNames(Orig).forEach(function (k) {
+                        if (['length', 'name', 'prototype'].indexOf(k) === -1) { try { KpMap[k] = Orig[k]; } catch (e) { } }
+                    });
+                    KpMap.__kpWrapped = true;
+                    gm.Map = KpMap;
+                    return true;
+                }
+            } catch (e) { }
+            return false;
+        }
+        if (tryWrap()) return;
+        const iv = setInterval(function () { tries++; if (tryWrap() || tries > 600) { clearInterval(iv); } }, 15);
+    })();
+
     function validLL(p) {
         return p && Array.isArray(p.latLng) && p.latLng.length >= 2 &&
             typeof p.latLng[0] === 'number' && typeof p.latLng[1] === 'number';
@@ -239,6 +271,25 @@
             document.querySelector('#map_canvas') ||
             document.querySelector('#map');
         const origEls = [document.getElementById('map'), document.querySelector('.ProximityMap')].filter(Boolean);
+
+        // Canonical Google Maps display:none fix — remember the centre while the
+        // map is visible, then on re-show trigger resize + restore the centre.
+        let savedCenter = null;
+        function gmap() { try { return pageWin().__kpGoogleMap || findGoogleMap(); } catch (e) { return null; } }
+        function captureCenter() { try { const m = gmap(); if (m && m.getCenter) { savedCenter = m.getCenter(); } } catch (e) { } }
+        function refreshOrigMap() {
+            const g = pageWin().google, m = gmap();
+            console.info('[EnhancedLitmus] Näytä alkuperäinen kartta — Google Maps -instanssi löytyi:', !!m);
+            try {
+                if (m && g && g.maps && g.maps.event) {
+                    g.maps.event.trigger(m, 'resize');
+                    if (savedCenter && m.setCenter) { m.setCenter(savedCenter); }
+                    return;
+                }
+            } catch (e) { }
+            window.dispatchEvent(new Event('resize'));
+        }
+        captureCenter();
         origEls.forEach(function (el) { el.style.display = 'none'; });
 
         const title = document.createElement('div');
@@ -249,25 +300,11 @@
         origToggle.className = 'kp-orig-toggle';
         origToggle.textContent = 'Näytä alkuperäinen kartta';
         origToggle.addEventListener('click', function () {
-            const nowHidden = origEls.length && origEls[0].style.display === 'none';
-            origEls.forEach(function (el) { el.style.display = nowHidden ? '' : 'none'; });
-            origToggle.textContent = nowHidden ? 'Piilota alkuperäinen kartta' : 'Näytä alkuperäinen kartta';
-            if (nowHidden) {
-                // Google Maps only draws one tile after being un-hidden; nudge
-                // the real map instance (a 1 px pan + back = a "move") to reload.
-                setTimeout(function () {
-                    try {
-                        const gmap = findGoogleMap();
-                        const g = pageWin().google;
-                        if (gmap) {
-                            if (g && g.maps && g.maps.event) { g.maps.event.trigger(gmap, 'resize'); }
-                            if (gmap.panBy) { gmap.panBy(1, 1); gmap.panBy(-1, -1); }
-                        } else {
-                            window.dispatchEvent(new Event('resize'));
-                        }
-                    } catch (e) { window.dispatchEvent(new Event('resize')); }
-                }, 100);
-            }
+            const showing = origEls.length && origEls[0].style.display === 'none';
+            if (!showing) { captureCenter(); }
+            origEls.forEach(function (el) { el.style.display = showing ? '' : 'none'; });
+            origToggle.textContent = showing ? 'Piilota alkuperäinen kartta' : 'Näytä alkuperäinen kartta';
+            if (showing) { setTimeout(refreshOrigMap, 60); setTimeout(refreshOrigMap, 400); }
         });
         title.appendChild(origToggle);
         const wrap = document.createElement('div');
