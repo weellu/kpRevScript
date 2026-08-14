@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Final to karttapaikka + reviewer map
 // @namespace    http://tampermonkey.net/
-// @version      0.88
+// @version      0.89
 // @description  Add Kansalaisen Karttapaikka links and an interactive MML/OSM/Google map (waypoints, range rings, road-owner overlay, swine fever zones, coordinate search) to the geocache review page
 // @author       Veli-Pekka Eloranta
 // @match        https://*.geocaching.com/*
@@ -868,14 +868,18 @@
         // The same layer is also in the layer selector; the two stay in sync
         // because the button state is driven by the map's layeradd/layerremove
         // events rather than by the click handler.
-        // A pig's snout. The nostrils are filled with currentColor so they
-        // invert to white along with the outline when the button is active.
-        const ASF_ICON = '<svg viewBox="0 0 24 24" width="23" height="23" fill="none" ' +
-            'stroke="currentColor" stroke-width="1.9">' +
-            '<ellipse cx="12" cy="12" rx="9.3" ry="6.1"/>' +
-            '<ellipse cx="8.8" cy="12" rx="1.55" ry="2.7" fill="currentColor" stroke="none"/>' +
-            '<ellipse cx="15.2" cy="12" rx="1.55" ry="2.7" fill="currentColor" stroke="none"/>' +
-            '</svg>';
+        // A pig's snout, shaped after the 🐽 emoji: a solid rounded-rectangle
+        // muzzle rather than a plain ellipse. The nostrils are subpaths of the
+        // same path and fill-rule="evenodd" turns them into real holes, so the
+        // button's own background shows through them -- white normally, blue
+        // when active -- without having to know which state we are in.
+        const ASF_ICON = '<svg viewBox="0 0 24 24" width="23" height="23">' +
+            '<path fill="currentColor" fill-rule="evenodd" d="' +
+            'M8 5H16A5.5 5.5 0 0 1 21.5 10.5V13.5A5.5 5.5 0 0 1 16 19H8' +
+            'A5.5 5.5 0 0 1 2.5 13.5V10.5A5.5 5.5 0 0 1 8 5Z' +
+            'M6.7 12a1.9 3.1 0 1 0 3.8 0a1.9 3.1 0 1 0-3.8 0Z' +
+            'M13.5 12a1.9 3.1 0 1 0 3.8 0a1.9 3.1 0 1 0-3.8 0Z' +
+            '"/></svg>';
 
         let asfLink = null;
 
