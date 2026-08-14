@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Final to karttapaikka + reviewer map
 // @namespace    http://tampermonkey.net/
-// @version      0.86
+// @version      0.87
 // @description  Add Kansalaisen Karttapaikka links and an interactive MML/OSM/Google map (waypoints, range rings, road-owner overlay, swine fever zones) to the geocache review page
 // @author       Veli-Pekka Eloranta
 // @match        https://*.geocaching.com/*
@@ -275,7 +275,13 @@
             document.head.appendChild(l);
         }
         GM_addStyle(
-            '#kp-map{height:400px;margin:10px 0;border:1px solid #ccc;}' +
+            // position + z-index give the container its own stacking context.
+            // Without it Leaflet's internal z-indexes (panes 400, controls up
+            // to 1000) land in the page's root stacking context and punch
+            // through geocaching.com's own overlays -- most visibly through
+            // its map's full-screen mode.
+            '#kp-map{height:400px;margin:10px 0;border:1px solid #ccc;' +
+            'position:relative;z-index:0;}' +
             // Leaflet's CSS points the layers-control icon at a relative image
             // path that 404s when injected into the review page, leaving a blank
             // white button. Point it at the absolute CDN images instead.
@@ -342,6 +348,28 @@
         // ASF shading just above the base map, the two WMS overlays above it.
         map.createPane('kpAsf').style.zIndex = 250;
         map.createPane('kpWms').style.zIndex = 350;
+
+        // The stacking context above handles the CSS side, but geocaching.com's
+        // map can also go full screen via the Fullscreen API. If it does so on
+        // an ancestor of our container, our map is inside the full-screen
+        // subtree and keeps rendering on top of theirs. Nothing of ours is
+        // useful in that view, so take it out while somebody else owns the
+        // screen and put it back afterwards.
+        function kpOwnElements() {
+            return [mapDiv].concat(
+                Array.prototype.slice.call(document.querySelectorAll('.kp-asf-warn')));
+        }
+        function onFullscreenChange() {
+            const fs = document.fullscreenElement || document.webkitFullscreenElement || null;
+            const hide = !!fs && fs !== mapDiv && !mapDiv.contains(fs);
+            kpOwnElements().forEach(function (el) {
+                el.style.display = hide ? 'none' : '';
+            });
+            // Leaflet measures the container on show; it was 0x0 while hidden.
+            if (!hide) { setTimeout(function () { map.invalidateSize(); }, 0); }
+        }
+        document.addEventListener('fullscreenchange', onFullscreenChange);
+        document.addEventListener('webkitfullscreenchange', onFullscreenChange);
 
         // --- Base layers -------------------------------------------------
         const mmlUrl = function (layer) {
