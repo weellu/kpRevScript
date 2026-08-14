@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Final to karttapaikka + reviewer map
 // @namespace    http://tampermonkey.net/
-// @version      0.87
-// @description  Add Kansalaisen Karttapaikka links and an interactive MML/OSM/Google map (waypoints, range rings, road-owner overlay, swine fever zones) to the geocache review page
+// @version      0.88
+// @description  Add Kansalaisen Karttapaikka links and an interactive MML/OSM/Google map (waypoints, range rings, road-owner overlay, swine fever zones, coordinate search) to the geocache review page
 // @author       Veli-Pekka Eloranta
 // @match        https://*.geocaching.com/*
 // @require      https://unpkg.com/leaflet@1.9.4/dist/leaflet.js
@@ -240,6 +240,110 @@
         return ring.map(function (c) { return [c[1], c[0]]; });
     }
 
+    // ---------------------------------------------------------------------
+    // Feature 4: coordinate search box
+    //
+    // Coordinates get pasted in from all over the place, so the parser is
+    // deliberately forgiving. It accepts, with or without degree/minute/second
+    // symbols and with the hemisphere letter on either side of its numbers:
+    //   N 60° 36.000 E 027° 48.600     (geocaching's usual DDM)
+    //   60 36.000 N 27 48.600 E
+    //   N 60° 36' 00" E 27° 48' 36"    (DMS)
+    //   60.6000, 27.8100               (decimal degrees)
+    //   60,6000 27,8100                (Finnish decimal comma)
+    // ---------------------------------------------------------------------
+    function parseCoords(input) {
+        if (!input) return null;
+        let s = String(input).toUpperCase();
+        s = s.replace(/[°º*'’′"”″]/g, ' ').replace(/[;|]/g, ' ');
+
+        // A comma is either the lat/lon separator or a Finnish decimal point.
+        // One comma in the whole string can only be the separator; two or more
+        // must be decimal points ("60,6 27,8").
+        const commas = (s.match(/,/g) || []).length;
+        s = s.replace(/,/g, (/[NSEW]/.test(s) || commas === 1) ? ' ' : '.');
+
+        const tokens = s.match(/[NSEW]|[-+]?\d+(?:\.\d+)?/g);
+        if (!tokens) return null;
+
+        // Split into groups of numbers, each optionally tagged with the
+        // hemisphere letter that precedes or follows it.
+        const groups = [];
+        let cur = null;
+        for (const t of tokens) {
+            if (/[NSEW]/.test(t)) {
+                if (cur && !cur.hemi && cur.nums.length) {
+                    cur.hemi = t;                       // trailing letter
+                    groups.push(cur);
+                    cur = null;
+                } else {
+                    if (cur) groups.push(cur);
+                    cur = { hemi: t, nums: [] };        // leading letter
+                }
+            } else {
+                if (!cur) cur = { hemi: null, nums: [] };
+                cur.nums.push(parseFloat(t));
+            }
+        }
+        if (cur) groups.push(cur);
+
+        // degrees + minutes/60 + seconds/3600
+        function toDeg(nums) {
+            if (!nums.length || nums.length > 3) return null;
+            for (let i = 1; i < nums.length; i++) {
+                if (nums[i] < 0 || nums[i] >= 60) return null;
+            }
+            const sign = nums[0] < 0 ? -1 : 1;
+            let v = Math.abs(nums[0]);
+            if (nums.length > 1) v += nums[1] / 60;
+            if (nums.length > 2) v += nums[2] / 3600;
+            return sign * v;
+        }
+
+        let lat = null, lon = null;
+        const tagged = groups.filter(function (g) { return g.hemi; });
+
+        if (tagged.length === 2) {
+            for (const g of tagged) {
+                const v = toDeg(g.nums);
+                if (v === null) return null;
+                const signed = /[SW]/.test(g.hemi) ? -Math.abs(v) : Math.abs(v);
+                if (/[NS]/.test(g.hemi)) { lat = signed; } else { lon = signed; }
+            }
+        } else if (!tagged.length) {
+            // No hemisphere letters: 2 numbers = decimal degrees, 4 = DDM, 6 = DMS
+            const nums = groups.reduce(function (a, g) { return a.concat(g.nums); }, []);
+            if (nums.length % 2 !== 0 || nums.length < 2 || nums.length > 6) return null;
+            const half = nums.length / 2;
+            lat = toDeg(nums.slice(0, half));
+            lon = toDeg(nums.slice(half));
+        } else {
+            return null;
+        }
+
+        if (lat === null || lon === null || isNaN(lat) || isNaN(lon)) return null;
+        // Bare numbers carry no lat/lon order, so tolerate them being swapped.
+        // With N/S/E/W the roles are explicit: an out-of-range value there is an
+        // error, not a swap, and quietly reinterpreting it would hand back a
+        // plausible-looking but wrong position.
+        if (!tagged.length && Math.abs(lat) > 90 && Math.abs(lon) <= 90) {
+            const t = lat; lat = lon; lon = t;
+        }
+        if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+        return { lat: lat, lon: lon };
+    }
+
+    // Back to geocaching's own notation, so the parse can be eyeballed.
+    function formatDdm(lat, lon) {
+        function one(v, pos, neg, pad) {
+            const d = Math.floor(Math.abs(v));
+            const m = (Math.abs(v) - d) * 60;
+            return (v < 0 ? neg : pos) + ' ' + String(d).padStart(pad, '0') +
+                '° ' + (m < 10 ? '0' : '') + m.toFixed(3);
+        }
+        return one(lat, 'N', 'S', 2) + ' ' + one(lon, 'E', 'W', 3);
+    }
+
     function streetViewLink(lat, lon) {
         return '<a target="_blank" href="https://maps.google.com/maps?cbp=0,0,0,0,0&layer=c&ll=' +
             lat + ',' + lon + '&cbll=' + lat + ',' + lon + '&q=' + lat + ',' + lon + '">StreetView</a>';
@@ -305,6 +409,13 @@
             '.kp-measure-tip{background:#fff;border:1px solid #4dabf7;color:#0b60b0;' +
             'font-weight:bold;padding:1px 6px;border-radius:3px;box-shadow:0 1px 3px rgba(0,0,0,0.3);}' +
             '.kp-measure-tip:before{display:none;}' +
+            '.kp-coord-control{background:#fff;border-radius:5px;' +
+            'box-shadow:0 1px 5px rgba(0,0,0,0.4);}' +
+            '.leaflet-touch .kp-coord-control{border:2px solid rgba(0,0,0,0.2);box-shadow:none;}' +
+            '.kp-coord-control input{border:0;border-radius:5px;padding:7px 9px;width:185px;' +
+            'font:12px/1.2 monospace;color:#222;background:transparent;outline:none;}' +
+            '.kp-coord-control.kp-coord-bad{box-shadow:0 0 0 2px #c00;}' +
+            '.kp-coord-control.kp-coord-bad input{background:#ffe8e8;color:#900;}' +
             // ASF warning. The two zones get deliberately different colours,
             // matching the polygon shades on the map: deep red = ydinalue
             // (strictest), orange = tartuntavyöhyke.
@@ -757,9 +868,14 @@
         // The same layer is also in the layer selector; the two stay in sync
         // because the button state is driven by the map's layeradd/layerremove
         // events rather than by the click handler.
-        const ASF_ICON = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" ' +
-            'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
-            '<path d="M12 3 2.5 20h19z"/><path d="M12 9.5v4.4M12 17.1v.1"/></svg>';
+        // A pig's snout. The nostrils are filled with currentColor so they
+        // invert to white along with the outline when the button is active.
+        const ASF_ICON = '<svg viewBox="0 0 24 24" width="23" height="23" fill="none" ' +
+            'stroke="currentColor" stroke-width="1.9">' +
+            '<ellipse cx="12" cy="12" rx="9.3" ry="6.1"/>' +
+            '<ellipse cx="8.8" cy="12" rx="1.55" ry="2.7" fill="currentColor" stroke="none"/>' +
+            '<ellipse cx="15.2" cy="12" rx="1.55" ry="2.7" fill="currentColor" stroke="none"/>' +
+            '</svg>';
 
         let asfLink = null;
 
@@ -796,6 +912,76 @@
             }
         });
         map.addControl(new AsfControl());
+
+        // --- Coordinate search box (top left, under the zoom buttons) ----
+        // Paste coordinates in any of the formats parseCoords understands and
+        // press Enter: the map jumps to the spot and drops a marker there. The
+        // marker also becomes a snap target for the measuring tool, which is
+        // the point of it -- checking the distance from a coordinate someone
+        // quoted in a log or a reviewer note.
+        let searchMarker = null;
+
+        function showSearchedPoint(lat, lon) {
+            const here = L.latLng(lat, lon);
+            if (searchMarker) { map.removeLayer(searchMarker); }
+            searchMarker = L.circleMarker(here, {
+                radius: 8, color: '#0b60b0', weight: 3,
+                fillColor: '#4dabf7', fillOpacity: 0.9
+            }).addTo(map);
+
+            const zone = asfZoneAt(lat, lon);
+            const zoneNote = zone
+                ? '<br/><b style="color:#8b1a00">⚠ Sikaruton ' +
+                  (zone === 'ydinalue' ? 'ydinalue' : 'tartuntavyöhyke') + '</b>'
+                : '';
+
+            searchMarker.bindPopup(
+                '<b>Haettu piste</b><br/>' + formatDdm(lat, lon) +
+                '<br/>' + lat.toFixed(5) + ', ' + lon.toFixed(5) +
+                '<br/>Etäisyys nollapisteestä: ' +
+                fmtDist(map.distance(here, L.latLng(latitude, longitude))) +
+                zoneNote +
+                '<br/><a target="_blank" href="' + karttapaikkaLink(lat, lon) + '">Karttapaikka</a>' +
+                '<br/>' + streetViewLink(lat, lon));
+
+            measurePoints.push(here);
+            map.setView(here, Math.max(map.getZoom(), 15));
+            searchMarker.openPopup();
+        }
+
+        const CoordControl = L.Control.extend({
+            options: { position: 'topleft' },
+            onAdd: function () {
+                const container = L.DomUtil.create('div', 'leaflet-control kp-coord-control');
+                const input = L.DomUtil.create('input', '', container);
+                input.type = 'text';
+                input.placeholder = 'N 60 36.000 E 27 48.600';
+                input.title = 'Syötä koordinaatit ja paina Enter';
+                input.setAttribute('aria-label', 'Hae koordinaateilla');
+
+                // Keep the map from treating typing and clicking as map input.
+                L.DomEvent.disableClickPropagation(container);
+                L.DomEvent.disableScrollPropagation(container);
+                L.DomEvent.on(input, 'keydown keypress keyup', L.DomEvent.stopPropagation);
+
+                L.DomEvent.on(input, 'keydown', function (e) {
+                    container.classList.remove('kp-coord-bad');
+                    if (e.key !== 'Enter') return;
+                    L.DomEvent.preventDefault(e);
+                    const c = parseCoords(input.value);
+                    if (!c) {
+                        container.classList.add('kp-coord-bad');
+                        input.title = 'Koordinaatteja ei tunnistettu';
+                        return;
+                    }
+                    input.title = 'Syötä koordinaatit ja paina Enter';
+                    input.value = formatDdm(c.lat, c.lon);   // echo the parse back
+                    showSearchedPoint(c.lat, c.lon);
+                });
+                return container;
+            }
+        });
+        map.addControl(new CoordControl());
 
         function addRange(latlng) {
             for (let r = 1; r <= 161; r += 10) {
