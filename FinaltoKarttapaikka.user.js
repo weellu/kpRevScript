@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Final to karttapaikka + reviewer map
 // @namespace    http://tampermonkey.net/
-// @version      0.89
+// @version      0.90
 // @description  Add Kansalaisen Karttapaikka links and an interactive MML/OSM/Google map (waypoints, range rings, road-owner overlay, swine fever zones, coordinate search) to the geocache review page
 // @author       Veli-Pekka Eloranta
 // @match        https://*.geocaching.com/*
@@ -917,7 +917,7 @@
         });
         map.addControl(new AsfControl());
 
-        // --- Coordinate search box (top left, under the zoom buttons) ----
+        // --- Coordinate search box (bottom left) -------------------------
         // Paste coordinates in any of the formats parseCoords understands and
         // press Enter: the map jumps to the spot and drops a marker there. The
         // marker also becomes a snap target for the measuring tool, which is
@@ -954,7 +954,7 @@
         }
 
         const CoordControl = L.Control.extend({
-            options: { position: 'topleft' },
+            options: { position: 'bottomleft' },
             onAdd: function () {
                 const container = L.DomUtil.create('div', 'leaflet-control kp-coord-control');
                 const input = L.DomUtil.create('input', '', container);
