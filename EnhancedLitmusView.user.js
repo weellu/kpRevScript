@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Enhanced Litmus View
 // @namespace    http://tampermonkey.net/
-// @version      1.01
-// @description  Add MML/OSM/Google map layers, road-owner & cadastral overlays, distance measurement and a WGS84 DDM coordinate picker to the reviewer Litmus Test page
+// @version      1.02
+// @description  Add MML/OSM/Google map layers, road-owner & cadastral overlays, distance measurement and a WGS84 DDM coordinate picker to the reviewer Litmus Test page; hide the page bottom bar and rebuild its Query Radius control under the map
 // @author       Veli-Pekka Eloranta
 // @match        https://admin.geocaching.com/LitmusTest/*
 // @require      https://unpkg.com/leaflet@1.9.4/dist/leaflet.js
@@ -202,6 +202,162 @@
     }
 
     // ---------------------------------------------------------------------
+    // The page's own bottom toolbar (Filters: / Query Radius: / Lat/Lng:).
+    // Our map already carries filter chips and a coordinate picker, so the
+    // whole bar is hidden and only Query Radius is rebuilt below our map.
+    // The rebuilt buttons drive the original (hidden) control, so the page's
+    // own query logic runs untouched.
+    // ---------------------------------------------------------------------
+    const RADIUS_RE = /\d[\d.,]*\s*(mi|miles?|km|m|ft|feet|meters?)\b/i;
+    function normLabel(s) {
+        return String(s || '').replace(/[^0-9a-z.,\s]/gi, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+    }
+
+    // First leaf element whose text matches — used to locate the bar's labels.
+    function leafWithText(re) {
+        const els = document.body ? document.body.querySelectorAll('*') : [];
+        for (let i = 0; i < els.length; i++) {
+            if (!els[i].children.length && re.test(els[i].textContent || '')) return els[i];
+        }
+        return null;
+    }
+
+    // The bar is the nearest ancestor of "Query Radius:" that also holds the
+    // "Filters:" and "Lat/Lng:" labels; from there climb to the outermost
+    // wrapper containing nothing else, so a fixed footer goes away with it.
+    function findBottomBar() {
+        const radiusLabel = leafWithText(/query\s*radius/i);
+        if (!radiusLabel) return null;
+        const llLabel = leafWithText(/lat\s*\/\s*lng/i);
+        let el = radiusLabel.parentElement, bar = null;
+        while (el && el !== document.body) {
+            const t = el.textContent || '';
+            if (/lat\s*\/\s*lng/i.test(t) && /filters/i.test(t)) { bar = el; break; }
+            el = el.parentElement;
+        }
+        if (!bar) return null;
+        const keep = [document.getElementById('map'), document.querySelector('.ProximityMap'),
+            document.getElementById('kp-map')].filter(Boolean);
+        while (bar.parentElement && bar.parentElement !== document.body &&
+            (bar.parentElement.textContent || '').trim() === (bar.textContent || '').trim() &&
+            !keep.some(function (k) { return bar.parentElement.contains(k); })) {
+            bar = bar.parentElement;
+        }
+        return { bar: bar, radiusLabel: radiusLabel, llLabel: llLabel };
+    }
+
+    // Radius choices, whatever the control is built from: a <select>, or a
+    // dropdown button plus menu. Each option applies itself on the original.
+    function radiusOptions(found) {
+        const els = Array.prototype.slice.call(found.bar.querySelectorAll('*'));
+        const from = els.indexOf(found.radiusLabel) + 1;
+        const llAt = found.llLabel ? els.indexOf(found.llLabel) : -1;
+        const to = llAt > from ? llAt : els.length;
+        for (let i = from; i < to; i++) {
+            const el = els[i];
+            if (el.tagName === 'SELECT') { return selectOptions(el); }
+            const txt = (el.textContent || '').trim();
+            const clickable = el.tagName === 'BUTTON' || el.tagName === 'A' ||
+                /dropdown-toggle/.test(String(el.className || ''));
+            if (clickable && txt.length < 40 && RADIUS_RE.test(txt)) {
+                const opts = menuOptions(el, txt);
+                if (opts && opts.length) return opts;
+            }
+        }
+        return null;
+    }
+    function selectOptions(sel) {
+        return Array.prototype.map.call(sel.options, function (o) {
+            return {
+                label: (o.textContent || '').trim() || o.value,
+                selected: o.selected,
+                apply: function () {
+                    sel.value = o.value;
+                    sel.dispatchEvent(new Event('input', { bubbles: true }));
+                    sel.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+            };
+        });
+    }
+    function menuOptions(toggle, current) {
+        const scopes = [toggle.parentElement, toggle.parentElement && toggle.parentElement.parentElement];
+        let menu = null;
+        for (let i = 0; i < scopes.length && !menu; i++) {
+            if (!scopes[i]) continue;
+            const cand = scopes[i].querySelector('.dropdown-menu, [role="menu"], ul');
+            if (cand && !cand.contains(toggle)) { menu = cand; }
+        }
+        if (!menu) return null;
+        let items = Array.prototype.slice.call(menu.querySelectorAll('a, button'));
+        if (!items.length) { items = Array.prototype.slice.call(menu.querySelectorAll('li, option')); }
+        const cur = normLabel(current);
+        return items.filter(function (it) { return RADIUS_RE.test(it.textContent || ''); })
+            .map(function (it) {
+                const label = (it.textContent || '').trim();
+                return {
+                    label: label,
+                    selected: normLabel(label) === cur,
+                    apply: function () { it.click(); }
+                };
+            });
+    }
+
+    // Hide the bar and fill our own toolbar with the radius buttons. The bar
+    // is server-rendered, but retry briefly in case it arrives late.
+    function setupBottomBar(toolbar, tries) {
+        const found = findBottomBar();
+        if (!found) {
+            if (tries < 20) { setTimeout(function () { setupBottomBar(toolbar, tries + 1); }, 300); }
+            return;
+        }
+        found.bar.classList.add('kp-bar-hidden');
+        toolbar.textContent = '';
+        toolbar.style.display = '';
+
+        const lbl = document.createElement('span');
+        lbl.className = 'kp-toolbar-label';
+        lbl.textContent = 'Kyselysäde:';
+        toolbar.appendChild(lbl);
+
+        const opts = radiusOptions(found);
+        if (opts && opts.length) {
+            opts.forEach(function (o) {
+                const b = document.createElement('button');
+                b.type = 'button';
+                b.className = 'kp-radius' + (o.selected ? ' kp-active' : '');
+                b.textContent = o.label;
+                b.title = 'Hae naapurit ' + o.label + ' säteellä';
+                b.addEventListener('click', function () {
+                    if (o.selected) return;
+                    opts.forEach(function (x) { x.selected = false; });
+                    o.selected = true;
+                    Array.prototype.forEach.call(toolbar.querySelectorAll('.kp-radius'), function (x) {
+                        x.classList.remove('kp-active');
+                    });
+                    b.classList.add('kp-active');
+                    o.apply();
+                });
+                toolbar.appendChild(b);
+            });
+        } else {
+            const note = document.createElement('span');
+            note.className = 'kp-toolbar-note';
+            note.textContent = 'Sädevalitsinta ei tunnistettu — käytä alkuperäistä alapalkkia.';
+            toolbar.appendChild(note);
+        }
+
+        const barToggle = document.createElement('button');
+        barToggle.type = 'button';
+        barToggle.className = 'kp-bar-toggle';
+        barToggle.textContent = 'Näytä alkuperäinen alapalkki';
+        barToggle.addEventListener('click', function () {
+            const hidden = found.bar.classList.toggle('kp-bar-hidden');
+            barToggle.textContent = hidden ? 'Näytä alkuperäinen alapalkki' : 'Piilota alkuperäinen alapalkki';
+        });
+        toolbar.appendChild(barToggle);
+    }
+
+    // ---------------------------------------------------------------------
     // Build the enhanced map
     // ---------------------------------------------------------------------
     function buildMap() {
@@ -262,7 +418,20 @@
             'border:1px solid #bbb;border-radius:3px;}' +
             '.kp-coord-copy{padding:3px 10px;cursor:pointer;border:1px solid #888;border-radius:3px;' +
             'background:#f4f4f4;font-size:13px;}' +
-            '.kp-coord-copy:hover{background:#e8e8e8;}');
+            '.kp-coord-copy:hover{background:#e8e8e8;}' +
+            // Our own bottom toolbar, replacing the page's hidden one.
+            '.kp-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:0 0 12px;' +
+            'padding:6px 8px;background:#fafafa;border:1px solid #ddd;border-radius:4px;font-size:13px;}' +
+            '.kp-toolbar-label{font-weight:bold;margin-right:2px;}' +
+            '.kp-toolbar-note{color:#888;}' +
+            '.kp-radius{font-size:12px;padding:3px 10px;border:1px solid #aaa;border-radius:11px;' +
+            'background:#fff;cursor:pointer;color:#333;}' +
+            '.kp-radius:hover{background:#eef6ff;}' +
+            '.kp-radius.kp-active{background:#4a90d9;border-color:#3573ad;color:#fff;cursor:default;}' +
+            '.kp-bar-toggle{margin-left:auto;font-size:12px;padding:2px 8px;cursor:pointer;' +
+            'border:1px solid #888;border-radius:4px;background:#f4f4f4;}' +
+            '.kp-bar-toggle:hover{background:#e8e8e8;}' +
+            '.kp-bar-hidden{display:none !important;}');
 
         // Insert the map after the existing proximity (Google) map, hide that
         // original map by default, and offer a button to bring it back.
@@ -322,6 +491,13 @@
             document.body.insertBefore(title, document.body.firstChild);
             document.body.insertBefore(wrap, title.nextSibling);
         }
+
+        // Hide the page's own bottom bar and rebuild Query Radius right here.
+        const toolbar = document.createElement('div');
+        toolbar.className = 'kp-toolbar';
+        toolbar.style.display = 'none';
+        wrap.parentNode.insertBefore(toolbar, wrap.nextSibling);
+        setupBottomBar(toolbar, 0);
 
         const map = L.map('kp-map');
 
