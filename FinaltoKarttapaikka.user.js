@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Final to karttapaikka + reviewer map
 // @namespace    http://tampermonkey.net/
-// @version      0.90
+// @version      0.91
 // @description  Add Kansalaisen Karttapaikka links and an interactive MML/OSM/Google map (waypoints, range rings, road-owner overlay, swine fever zones, coordinate search) to the geocache review page
 // @author       Veli-Pekka Eloranta
 // @match        https://*.geocaching.com/*
@@ -101,34 +101,48 @@
     // ---------------------------------------------------------------------
     // Feature 3: African swine fever zones (afrikkalainen sikarutto, ASF)
     //
-    // Ruokavirasto has established an infected zone (tartuntavyöhyke) around
-    // the ASF findings in SE Finland, with a stricter core zone (ydinalue)
-    // inside it. There is no official geodata service for the zones -- they
-    // are published as PDF maps only -- so the rings below were rebuilt from
-    // the decision text (korjattu päätös 14.8.2026,
-    // dnro 5763/04.01.02.00.02/2026):
-    //   * tartuntavyöhyke = Virolahti and Miehikkälä in full + the part of
-    //     Lappeenranta south of the railway to Vainikkala (municipality
-    //     borders and the railway taken from OpenStreetMap),
-    //   * ydinalue = bounded in the west/north by Keipintie, Vaalimaantie,
-    //     Mattilantie, Vaalimaanväylä, seututie 387 and Tohmonmäentie, in the
-    //     east by the national border and in the south by the sea.
-    // Both were checked against Ruokavirasto's official map (liite 1,
-    // 13.8.2026): the outlines agree to ~97 % of the area. The rings are
-    // therefore indicative -- always confirm from the official map before
-    // making a publish decision, and update ASF_ZONES when the decision
-    // changes.
+    // Ruokavirasto's infected zone is split into area A and area B, and area A
+    // contains a stricter core zone (ydinalue). The zones are published as PDF
+    // only -- there is no geodata service -- so these rings come from the
+    // decision of 28.8.2026 (dnro 5763/04.01.02.00.02/2026) and its map annex:
+    //
+    //   * ydinalue -- unchanged since 14.8.2026. Bounded in the west/north by
+    //     Keipintie, Vaalimaantie, Mattilantie, Vaalimaanvayla, seututie 387
+    //     and Tohmonmaentie, in the east by the national border and in the
+    //     south by the sea. Traced from those OSM ways.
+    //   * alue A -- unchanged since 14.8.2026. Virolahti and Miehikkala in
+    //     full, plus the part of Lappeenranta south of the railway to
+    //     Vainikkala. Municipality borders and the railway from OSM.
+    //   * alue B -- new on 28.8.2026 after a find in Pyhtaa. Kotka, Hamina and
+    //     Pyhtaa in full, plus the parts of Loviisa, Lapinjarvi and Kouvola
+    //     south of the line running from the sea up the Koskenkylanjoki to the
+    //     E18, then vt6 to Elimaki, mt354 to Inkeroinen and the railway to the
+    //     Kotka border. Restriction 8 does NOT apply in area B.
+    //
+    // Area B deliberately mixes two sources. Its outline was lifted out of the
+    // map annex, whose zone polygons are vector paths: georeferencing them
+    // against the known area A gives an IoU of 0.995, so the boundary is the
+    // official line rather than a reconstruction. That map, however, draws both
+    // zones on land only, which would drop every archipelago cache in Kotka,
+    // Hamina and Pyhtaa -- municipalities the decision names "kokonaan". Those
+    // three are therefore taken whole, sea included, while the map's own
+    // polygon is kept for Loviisa, Lapinjarvi and Kouvola, where the text only
+    // says "the parts south of the line" and the map is what shows where that
+    // line runs.
+    //
+    // Still not official geodata: confirm from the annex before deciding, and
+    // rebuild these rings whenever the decision changes.
     //
     // Ring coordinates are [lon, lat].
     // ---------------------------------------------------------------------
-    const ASF_UPDATED = '14.8.2026';
+    const ASF_UPDATED = '28.8.2026';
     const ASF_INFO_URL = 'https://www.ruokavirasto.fi/elaimet/elainten-terveys-ja-elaintaudit/' +
         'elaintaudit/siat/afrikkalainen-sikarutto/asf-suomessa-2026/';
     const ASF_MAP_URL = 'https://www.ruokavirasto.fi/globalassets/elaimet/' +
-        'elainten-terveys-ja-elaintaudit/elaintaudit/asf/liite-bilaga-1-130826.pdf';
+        'elainten-terveys-ja-elaintaudit/elaintaudit/asf/asf_kartta_vyohykeajab1_kunnat2.pdf';
 
     const ASF_ZONES = {
-        tartuntavyohyke: [
+        alueA: [
             [27.99537,60.67121],[27.87343,60.60455],[27.84795,60.5824],[27.84775,60.58179],[27.84461,60.58074],[27.84373,60.5799],
             [27.84136,60.58005],[27.84007,60.57929],[27.84003,60.57884],[27.83844,60.57846],[27.83857,60.57773],[27.84087,60.57733],
             [27.84466,60.57487],[27.84405,60.5725],[27.8422,60.56936],[27.84174,60.56909],[27.84291,60.56705],[27.84208,60.56618],
@@ -184,6 +198,57 @@
             [27.89617,60.6576],[27.89821,60.65687],[27.90391,60.65691],[27.90495,60.65513],[27.90386,60.65408],[27.90402,60.65355],
             [27.90852,60.65082],[27.91227,60.64932],[27.91245,60.64852],[27.91327,60.64737],[27.91776,60.64614],[27.93004,60.63545],
             [27.87352,60.6046]
+        ],
+        alueB: [
+            [26.88654,60.63731],[26.92655,60.6503],[26.94364,60.65405],[26.94353,60.6555],[26.98504,60.66457],[27.04175,60.6793],
+            [27.04282,60.6792],[27.04322,60.67881],[27.04415,60.67561],[27.0455,60.67448],[27.05302,60.67201],[27.05739,60.67246],
+            [27.0604,60.67385],[27.06123,60.67494],[27.0636,60.67562],[27.06435,60.6754],[27.06518,60.67417],[27.0662,60.67391],
+            [27.06694,60.67302],[27.06829,60.67312],[27.07025,60.6727],[27.07135,60.67309],[27.07298,60.67303],[27.07436,60.6724],
+            [27.08042,60.67406],[27.10529,60.68946],[27.11013,60.69822],[27.11908,60.71246],[27.12971,60.71699],[27.1272,60.72011],
+            [27.12628,60.71996],[27.12563,60.72048],[27.12386,60.72389],[27.1231,60.72459],[27.12328,60.725],[27.11356,60.73711],
+            [27.11257,60.73746],[27.11061,60.7398],[27.11115,60.74055],[27.1152,60.74139],[27.11622,60.74194],[27.11708,60.74293],
+            [27.11883,60.74352],[27.11936,60.74408],[27.12065,60.74413],[27.12252,60.74474],[27.12528,60.74619],[27.12385,60.74922],
+            [27.12475,60.75188],[27.1239,60.75233],[27.12418,60.7527],[27.12511,60.75293],[27.12636,60.75666],[27.12307,60.75782],
+            [27.1221,60.75904],[27.1207,60.7595],[27.12087,60.76022],[27.12066,60.76055],[27.11913,60.76156],[27.11794,60.76176],
+            [27.11688,60.76264],[27.11712,60.76298],[27.11851,60.76321],[27.11759,60.76452],[27.11852,60.76427],[27.11951,60.76495],
+            [27.12073,60.76484],[27.1241,60.77738],[27.12722,60.77657],[27.13281,60.77573],[27.13303,60.7764],[27.20397,60.76052],
+            [27.21841,60.76095],[27.2272,60.76469],[27.22764,60.76585],[27.22989,60.76669],[27.23009,60.7672],[27.22964,60.76778],
+            [27.23081,60.76909],[27.2307,60.76954],[27.23194,60.77012],[27.23262,60.77186],[27.2318,60.77277],[27.23035,60.77342],
+            [27.23118,60.7751],[27.23202,60.77547],[27.23536,60.77584],[27.23585,60.77667],[27.24521,60.77666],[27.24557,60.77695],
+            [27.24826,60.77736],[27.25264,60.77681],[27.25515,60.77803],[27.25947,60.77843],[27.26468,60.78064],[27.26477,60.79174],
+            [27.26555,60.79356],[27.26516,60.79444],[27.26148,60.7949],[27.26216,60.79699],[27.26002,60.79872],[27.26134,60.80089],
+            [27.26978,60.80346],[27.28377,60.81611],[27.28574,60.81611],[27.29266,60.82202],[27.30216,60.82098],[27.31012,60.82058],
+            [27.32493,60.81834],[27.34803,60.82816],[27.35838,60.82972],[27.35651,60.83077],[27.35446,60.83104],[27.35919,60.83194],
+            [27.3597,60.83212],[27.36015,60.83299],[27.37108,60.8361],[27.37789,60.83848],[27.38033,60.83873],[27.38524,60.84013],
+            [27.41121,60.84137],[27.42837,60.84262],[27.42827,60.84218],[27.42904,60.84222],[27.43291,60.79199],[27.43847,60.77475],
+            [27.44264,60.76847],[27.44707,60.75276],[27.4463,60.75046],[27.44705,60.74812],[27.4433,60.74142],[27.43964,60.73041],
+            [27.43599,60.726],[27.42778,60.7104],[27.42498,60.70733],[27.42323,60.70381],[27.42717,60.70026],[27.43575,60.6944],
+            [27.44407,60.68606],[27.44445,60.68464],[27.44727,60.6821],[27.44877,60.67512],[27.45766,60.66143],[27.45352,60.65311],
+            [27.45523,60.64517],[27.45383,60.64425],[27.45463,60.64085],[27.43888,60.63439],[27.39029,60.60099],[27.38701,60.6012],
+            [27.38085,60.59409],[27.3602,60.56547],[27.36518,60.54799],[27.38032,60.52869],[27.38503,60.5251],[27.39887,60.51858],
+            [27.40747,60.48693],[27.40579,60.48721],[27.40674,60.48398],[27.39804,60.47478],[27.43633,60.4599],[27.49987,60.45246],
+            [27.53472,60.4399],[27.52255,60.43433],[27.52069,60.42409],[27.53319,60.41047],[27.55696,60.38744],[27.66979,60.35712],
+            [27.50471,60.25465],[27.45665,60.22326],[27.29304,60.2002],[26.76464,60.20018],[26.74152,60.18924],[26.65615,60.17126],
+            [26.64474,60.18919],[26.58044,60.27979],[26.57953,60.28726],[26.552,60.36715],[26.47131,60.40104],[26.48865,60.42425],
+            [26.47749,60.4555],[26.45679,60.48376],[26.45242,60.47782],[26.45253,60.47172],[26.44651,60.46171],[26.45622,60.45232],
+            [26.45825,60.43152],[26.44049,60.41979],[26.41739,60.42552],[26.41937,60.40888],[26.43403,60.40423],[26.44327,60.38873],
+            [26.46917,60.38163],[26.50013,60.37259],[26.54005,60.36219],[26.53582,60.3447],[26.50219,60.34791],[26.47683,60.35835],
+            [26.44717,60.35685],[26.42741,60.3662],[26.40458,60.35861],[26.39005,60.35687],[26.38811,60.37101],[26.38958,60.3824],
+            [26.41152,60.37778],[26.42552,60.37784],[26.42997,60.38008],[26.40496,60.39911],[26.39254,60.40405],[26.37848,60.40593],
+            [26.35395,60.39832],[26.3468,60.39163],[26.34808,60.38359],[26.3276,60.371],[26.31016,60.37452],[26.29469,60.39025],
+            [26.28925,60.40853],[26.27937,60.42401],[26.256,60.43998],[26.23657,60.45998],[26.23272,60.45122],[26.24566,60.42577],
+            [26.25058,60.40721],[26.2615,60.39562],[26.24311,60.3908],[26.22389,60.39762],[26.19452,60.40605],[26.18031,60.41345],
+            [26.16756,60.40755],[26.19759,60.39525],[26.19904,60.38194],[26.18938,60.36468],[26.15538,60.37973],[26.16143,60.38448],
+            [26.16735,60.39395],[26.13426,60.3943],[26.1303,60.39566],[26.11804,60.40699],[26.1169,60.40389],[26.07232,60.43355],
+            [26.06205,60.42932],[26.05971,60.42306],[26.06591,60.41242],[26.03647,60.4308],[26.02748,60.44059],[26.00893,60.45044],
+            [26.00385,60.46052],[25.9963,60.46865],[25.96975,60.48191],[25.94046,60.49208],[25.96326,60.49143],[25.96357,60.49357],
+            [25.9628,60.49356],[25.96495,60.50399],[25.96128,60.51539],[25.9729,60.52731],[25.99217,60.53358],[26.01849,60.53949],
+            [26.03038,60.54366],[26.04988,60.55685],[26.06575,60.56676],[26.07375,60.57722],[26.08181,60.58544],[26.10106,60.59414],
+            [26.11293,60.60014],[26.14289,60.61257],[26.18801,60.61775],[26.22436,60.62531],[26.24199,60.65276],[26.25314,60.67404],
+            [26.28595,60.69462],[26.33641,60.70998],[26.38291,60.71673],[26.41855,60.72668],[26.44213,60.71209],[26.48381,60.70981],
+            [26.52399,60.69568],[26.6331,60.68939],[26.69547,60.69363],[26.75793,60.68845],[26.78621,60.69094],[26.8187,60.68487],
+            [26.82762,60.68652],[26.83101,60.68634],[26.84327,60.69496],[26.84683,60.68969],[26.84926,60.68512],[26.85494,60.67978],
+            [26.864,60.67584],[26.86883,60.67002],[26.87537,60.66129],[26.87965,60.65075],[26.88654,60.63731]
         ]
     };
 
@@ -222,19 +287,59 @@
         return inside;
     }
 
-    // Returns 'ydinalue', 'tartuntavyohyke' or null. The core zone is checked
-    // first because it lies inside the infected zone.
+    // Returns 'ydinalue', 'alueA', 'alueB' or null. Checked strictest first:
+    // the core zone lies inside area A, and A and B overlap slightly along the
+    // Hamina/Virolahti border, where the two sources generalise differently.
+    const ASF_ORDER = ['ydinalue', 'alueA', 'alueB'];
+
     function asfZoneAt(lat, lon) {
-        if (inBBox(lat, lon, ASF_BBOX.ydinalue) &&
-            pointInRing(lat, lon, ASF_ZONES.ydinalue)) {
-            return 'ydinalue';
-        }
-        if (inBBox(lat, lon, ASF_BBOX.tartuntavyohyke) &&
-            pointInRing(lat, lon, ASF_ZONES.tartuntavyohyke)) {
-            return 'tartuntavyohyke';
+        for (const key of ASF_ORDER) {
+            if (inBBox(lat, lon, ASF_BBOX[key]) && pointInRing(lat, lon, ASF_ZONES[key])) {
+                return key;
+            }
         }
         return null;
     }
+
+    // What each zone is called and what it forbids. Area B is the odd one out:
+    // it is inside the infected zone, but the terrain restrictions that matter
+    // for a cache (decision item 8) are explicitly not applied there.
+    const ASF_INFO = {
+        ydinalue: {
+            css: 'kp-asf-core',
+            head: '\u26d4 SIKARUTON YDINALUE \u2013 tiukimmat rajoitukset',
+            name: 'ydinalue',
+            rules: ['<b>Maastossa liikkuminen muutoin kuin teit\u00e4 pitkin on kielletty ' +
+                    'ydinalueella.</b>',
+                    'Marjastus ja sienestys on kielletty ydinalueella.',
+                    'Koirien ulkoiluttaminen muutoin kuin teit\u00e4 pitkin kytkettyn\u00e4 ' +
+                    'on kielletty.',
+                    'Yleis\u00f6- ja urheilutapahtumien j\u00e4rjest\u00e4minen maastossa ' +
+                    'on kielletty.']
+        },
+        alueA: {
+            css: 'kp-asf-zone',
+            head: '\u26a0 SIKARUTON TARTUNTAVY\u00d6HYKE, ALUE A',
+            name: 'alue A',
+            rules: ['Koirien ulkoiluttaminen muutoin kuin teit\u00e4 pitkin kytkettyn\u00e4 ' +
+                    'on kielletty.',
+                    'Yleis\u00f6- ja urheilutapahtumien j\u00e4rjest\u00e4minen maastossa ' +
+                    'on kielletty.',
+                    'Koneellinen maanmuokkaus ja mets\u00e4taloustyöt maastossa on kielletty.']
+        },
+        alueB: {
+            css: 'kp-asf-b',
+            head: '\u26a0 SIKARUTON TARTUNTAVY\u00d6HYKE, ALUE B',
+            name: 'alue B',
+            rules: ['<b>Maastossa tapahtuvaa toimintaa koskevia rajoituksia (p\u00e4\u00e4t' +
+                    '\u00f6ksen kohta 8) ei sovelleta alueella B</b>, eli koirien ulkoilutta' +
+                    'mista, maastotapahtumia tai mets\u00e4t\u00f6it\u00e4 ei ole kielletty.',
+                    'Villisikojen ja muiden el\u00e4inten mets\u00e4stys on kielletty koko ' +
+                    'tartuntavy\u00f6hykkeell\u00e4.',
+                    'Vy\u00f6hykkeen rajat ovat muuttuneet useasti, joten tarkista tilanne ' +
+                    'ennen ratkaisua.']
+        }
+    };
 
     function asfLatLngs(ring) {
         return ring.map(function (c) { return [c[1], c[0]]; });
@@ -434,6 +539,9 @@
             '.kp-asf-core .kp-asf-head{background:#8b1a00;}' +
             '.kp-asf-core a{color:#8b1a00;}' +
             '.kp-asf-zone{border-color:#b35806;background:#fff5e8;color:#6b3505;}' +
+            '.kp-asf-b{border-color:#cb3335;background:#fff0f0;color:#7a1416;}' +
+            '.kp-asf-b .kp-asf-head{background:#cb3335;}' +
+            '.kp-asf-b a{color:#cb3335;}' +
             '.kp-asf-zone .kp-asf-head{background:#b35806;}' +
             '.kp-asf-zone a{color:#b35806;}');
 
@@ -602,7 +710,12 @@
         // The two zones use the same colours as the warning banners below, so
         // the banner tells you at a glance which shade on the map you are in.
         const asfLayer = L.layerGroup();
-        const asfInfected = L.polygon(asfLatLngs(ASF_ZONES.tartuntavyohyke), {
+        const asfB = L.polygon(asfLatLngs(ASF_ZONES.alueB), {
+            pane: 'kpAsf',
+            color: '#cb3335', weight: 4, opacity: 0.95,
+            fillColor: '#fb9a99', fillOpacity: 0.30
+        });
+        const asfInfected = L.polygon(asfLatLngs(ASF_ZONES.alueA), {
             pane: 'kpAsf',
             color: '#b35806', weight: 4, opacity: 0.95,
             fillColor: '#f16913', fillOpacity: 0.30
@@ -617,9 +730,17 @@
         // has to show at a glance where the zones are, zoomed in it must not
         // bury the terrain the reviewer is actually looking at. So scale it
         // with the zoom level instead of picking one compromise value.
+        // bringToBack sends a layer all the way back, so the last call wins:
+        // B ends up behind A, leaving the core zone on top of both.
+        function asfRestack() {
+            asfInfected.bringToBack();
+            asfB.bringToBack();
+        }
+
         function styleAsfForZoom() {
             const z = map.getZoom();
             const base = z >= 15 ? 0.15 : z >= 13 ? 0.22 : z >= 11 ? 0.30 : 0.36;
+            asfB.setStyle({ fillOpacity: base });
             asfInfected.setStyle({ fillOpacity: base });
             asfCore.setStyle({ fillOpacity: Math.min(0.55, base * 1.85) });
         }
@@ -627,6 +748,7 @@
         // No popups on the polygons: the restrictions are already spelled out
         // in the warning above the map, and a click-through callout on a shape
         // that covers half the view just gets in the way.
+        asfLayer.addLayer(asfB);
         asfLayer.addLayer(asfInfected);
         asfLayer.addLayer(asfCore);
 
@@ -909,7 +1031,7 @@
                         map.removeLayer(asfLayer);
                     } else {
                         asfLayer.addTo(map);
-                        asfInfected.bringToBack();
+                        asfRestack();
                     }
                 });
                 return container;
@@ -936,7 +1058,7 @@
             const zone = asfZoneAt(lat, lon);
             const zoneNote = zone
                 ? '<br/><b style="color:#8b1a00">⚠ Sikaruton ' +
-                  (zone === 'ydinalue' ? 'ydinalue' : 'tartuntavyöhyke') + '</b>'
+                  (ASF_INFO[zone].name) + '</b>'
                 : '';
 
             searchMarker.bindPopup(
@@ -1045,49 +1167,40 @@
         asfPoints.forEach(function (p) {
             const zone = asfZoneAt(p.lat, p.lon);
             if (zone) { asfHits.push({ point: p, zone: zone }); }
-            if (inBBox(p.lat, p.lon, ASF_BBOX.tartuntavyohyke, 0.25)) { asfNear = true; }
+            if (inBBox(p.lat, p.lon, ASF_BBOX.alueA, 0.25) ||
+                inBBox(p.lat, p.lon, ASF_BBOX.alueB, 0.25)) { asfNear = true; }
         });
 
         if (asfNear) {
             asfLayer.addTo(map);
-            asfInfected.bringToBack();
+            asfRestack();
         }
         styleAsfForZoom();   // the view is final by now (fitBounds may have moved it)
 
         if (asfHits.length) {
-            // A point in the core zone decides the look of the banner: the
-            // core zone's restrictions are the ones that actually stop a cache.
-            const inCore = asfHits.some(function (h) { return h.zone === 'ydinalue'; });
+            // The strictest zone any point falls in decides the banner: those
+            // are the restrictions that actually decide the cache.
+            const worst = asfHits.reduce(function (a, b) {
+                return ASF_ORDER.indexOf(b.zone) < ASF_ORDER.indexOf(a.zone) ? b : a;
+            }).zone;
+            const info = ASF_INFO[worst];
 
             const where = asfHits.map(function (h) {
-                return h.point.label +
-                    ' (' + (h.zone === 'ydinalue' ? 'ydinalue' : 'tartuntavyöhyke') + ')';
+                return h.point.label + ' (' + ASF_INFO[h.zone].name + ')';
             }).join(', ');
 
             const warn = document.createElement('div');
-            warn.className = 'kp-asf-warn ' + (inCore ? 'kp-asf-core' : 'kp-asf-zone');
+            warn.className = 'kp-asf-warn ' + info.css;
             warn.innerHTML =
-                '<div class="kp-asf-head">' +
-                (inCore
-                    ? '⛔ SIKARUTON YDINALUE – tiukimmat rajoitukset'
-                    : '⚠ SIKARUTON TARTUNTAVYÖHYKE') +
-                '</div>' +
+                '<div class="kp-asf-head">' + info.head + '</div>' +
                 '<div class="kp-asf-body">' +
                 '<span class="kp-asf-where">' + where + '</span>' +
                 '<ul>' +
-                (inCore
-                    ? '<li><b>Maastossa liikkuminen muutoin kuin teitä pitkin on ' +
-                      'kielletty ydinalueella.</b></li>' +
-                      '<li>Marjastus ja sienestys on kielletty ydinalueella.</li>'
-                    : '') +
-                '<li>Koirien ulkoiluttaminen muutoin kuin teitä pitkin kytkettynä on ' +
-                'kielletty.</li>' +
-                '<li>Yleisö- ja urheilutapahtumien järjestäminen maastossa on ' +
-                'kielletty.</li>' +
+                info.rules.map(function (r) { return '<li>' + r + '</li>'; }).join('') +
                 '</ul>' +
-                '<span class="kp-asf-note">Rajaus on piirretty Ruokaviraston päätöksen ' +
-                '(' + ASF_UPDATED + ') ja sen karttaliitteen pohjalta, eikä se ole ' +
-                'virallinen paikkatieto. Tarkista aina ' +
+                '<span class="kp-asf-note">Rajaus on piirretty Ruokaviraston p\u00e4\u00e4t' +
+                '\u00f6ksen (' + ASF_UPDATED + ') ja sen karttaliitteen pohjalta, eik\u00e4 ' +
+                'se ole virallinen paikkatieto. Tarkista aina ' +
                 '<a target="_blank" href="' + ASF_MAP_URL + '">virallinen kartta</a> ja ' +
                 '<a target="_blank" href="' + ASF_INFO_URL + '">Ruokaviraston ohjeet</a>.' +
                 '</span>' +
