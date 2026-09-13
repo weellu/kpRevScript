@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Final to karttapaikka + reviewer map
 // @namespace    http://tampermonkey.net/
-// @version      0.93
+// @version      0.94
 // @description  Add Kansalaisen Karttapaikka links and an interactive MML/OSM/Google map (waypoints, range rings, road-owner overlay, swine fever zones, coordinate search) to the geocache review page
 // @author       Veli-Pekka Eloranta
 // @match        https://*.geocaching.com/*
@@ -103,8 +103,10 @@
     //
     // One infected zone (tartuntavyohyke) with a stricter core (ydinalue)
     // inside it. The zones are published as PDF only -- there is no geodata
-    // service -- so these rings are rebuilt from the decision of 1.9.2026
-    // (dnro 5763/04.01.02.00.02/2026):
+    // service -- so these rings are rebuilt from the decisions of 1.9.2026 and
+    // 10.9.2026 (dnro 5763/04.01.02.00.02/2026). The 10.9 decision changed only
+    // the restrictions (items 7, 8 and 18); the zone wording is word-for-word
+    // the same, so the rings below are unchanged:
     //
     //   * ydinalue -- unchanged since 14.8.2026. Bounded in the west/north by
     //     Keipintie, Vaalimaantie, Mattilantie, Vaalimaanvayla, seututie 387
@@ -120,20 +122,20 @@
     //     paths (georeferenced against the known Virolahti/Miehikkala/
     //     Lappeenranta part at IoU 0.995, so the line is the official one).
     //
-    // The 1.9.2026 decision dropped the short-lived split into areas A and B,
-    // and it names those five municipalities "kokonaan" while noting that the
-    // map annex is being clarified "saariston osalta". The annex on the site is
-    // still the 28.8.2026 one, which draws the zone on land only; the rings
-    // here follow the decision text and include the sea, so archipelago caches
-    // warn. If Ruokavirasto's clarified annex turns out to exclude them after
-    // all, drop Kotka, Hamina and Pyhtaa back to the annex polygon.
+    // The 1.9.2026 decision dropped the short-lived split into areas A and B
+    // and named those five municipalities "kokonaan"; the map annex on the site
+    // is still the 28.8.2026 one, which draws the zone on land only. The rings
+    // here follow the decision text and include the sea. The 10.9.2026 decision
+    // settles that this is right: it lifts the dog rules specifically on "the
+    // zone's sea areas and the islands and skerries in them", which only makes
+    // sense if those waters are inside the zone to begin with.
     //
     // Not official geodata: confirm from the annex before deciding, and rebuild
     // these rings whenever the decision changes.
     //
     // Ring coordinates are [lon, lat].
     // ---------------------------------------------------------------------
-    const ASF_UPDATED = '1.9.2026';
+    const ASF_UPDATED = '10.9.2026';
     const ASF_INFO_URL = 'https://www.ruokavirasto.fi/elaimet/elainten-terveys-ja-elaintaudit/' +
         'elaintaudit/siat/afrikkalainen-sikarutto/asf-suomessa-2026/';
     const ASF_MAP_URL = 'https://www.ruokavirasto.fi/globalassets/elaimet/' +
@@ -281,10 +283,11 @@
         return null;
     }
 
-    // What each zone is called and what it forbids. The 1.9.2026 decision
-    // relaxed the general zone a lot: outside the core zone, ordinary movement
-    // in the terrain and dog walking are no longer restricted at all, and the
-    // event bans now only bite above a hundred participants.
+    // What each zone is called and what it forbids, per the 10.9.2026 decision.
+    // Dogs tightened again relative to 1.9: across the whole zone they must now
+    // be leashed or immediately leashable, and hounds may not be loose at all.
+    // Moving about on foot is still unrestricted outside the core zone, and the
+    // dog rules are explicitly lifted on the zone's sea areas and islands.
     const ASF_INFO = {
         ydinalue: {
             css: 'kp-asf-core',
@@ -292,8 +295,8 @@
             name: 'ydinalue',
             rules: ['<b>Maastossa liikkuminen jalan tai ajoneuvolla muutoin kuin teit\u00e4 ' +
                     'pitkin on kielletty.</b>',
-                    'Koirien ulkoiluttaminen muutoin kuin teit\u00e4 pitkin kytkettyn\u00e4 ' +
-                    'on kielletty.',
+                    'Koirien ulkoiluttaminen muutoin kuin teit\u00e4 pitkin kytkettyn\u00e4 on ' +
+                    'kielletty, lukuun ottamatta aidattuja koirametsi\u00e4.',
                     'Sienestys ja marjastus on kielletty.',
                     'Mets\u00e4taloustyöt ja koneellinen maanmuokkaus on kielletty.',
                     'Yleis\u00f6-, urheilu- ja koiratapahtumien j\u00e4rjest\u00e4minen on ' +
@@ -303,15 +306,21 @@
             css: 'kp-asf-zone',
             head: '\u26a0 SIKARUTON TARTUNTAVY\u00d6HYKE',
             name: 'tartuntavy\u00f6hyke',
-            rules: ['Maastossa j\u00e4rjestett\u00e4v\u00e4t yleis\u00f6- ja urheilutapahtumat ' +
-                    'on kielletty, jos osallistujia on yli sata.',
-                    'Maastossa j\u00e4rjestett\u00e4v\u00e4t koiratapahtumat on kielletty, ' +
-                    'ellei koiria pidet\u00e4 kytkettyn\u00e4 ja osallistujia ole enint\u00e4\u00e4n sata.',
+            rules: ['<b>Koirat on pidett\u00e4v\u00e4 kytkettyin\u00e4 tai v\u00e4litt\u00f6m' +
+                    '\u00e4sti kytkett\u00e4viss\u00e4.</b> Riistaa ajavia, haukkumalla ilmaisevia ' +
+                    'ja pys\u00e4ytt\u00e4vi\u00e4 koiria ei saa pit\u00e4\u00e4 irrallaan ' +
+                    'lainkaan, ei my\u00f6sk\u00e4\u00e4n koulutuksessa.',
+                    'Maastossa j\u00e4rjestett\u00e4v\u00e4t koiratapahtumat on kielletty, ellei ' +
+                    'koiria pidet\u00e4 kytkettyn\u00e4 ja osallistujia ole enint\u00e4\u00e4n sata.',
+                    'Maastossa j\u00e4rjestett\u00e4v\u00e4t yleis\u00f6- ja urheilutapahtumat on ' +
+                    'kielletty, jos osallistujia on yli sata.',
                     'Maaston kulottaminen on kielletty.',
-                    'Mets\u00e4stys on kielletty, pois lukien pienpetojen loukkupyynti sek\u00e4 ' +
-                    'merimetsojen ja hylkeiden mets\u00e4stys ydinalueen ulkopuolella.',
-                    '<b>Tavanomaista maastossa liikkumista tai koirien ulkoiluttamista ei ole ' +
-                    'rajoitettu ydinalueen ulkopuolella</b> (muutos 1.9.2026).']
+                    'Mets\u00e4stys on kielletty; poikkeuksina ydinalueen ulkopuolella pienpetojen ' +
+                    'loukku- ja rautapyynti, valkoposkihanhien suojamets\u00e4stys, hirvien ' +
+                    'vahtimismets\u00e4stys pelloilla sek\u00e4 merimetsot ja hylkeet.',
+                    '<b>Maastossa liikkumista jalan ei ole rajoitettu ydinalueen ulkopuolella.</b> ' +
+                    'Koirarajoitukset eiv\u00e4t my\u00f6sk\u00e4\u00e4n koske vy\u00f6hykkeen ' +
+                    'merialueita eiv\u00e4tk\u00e4 niill\u00e4 sijaitsevia saaria ja luotoja.']
         }
     };
 
