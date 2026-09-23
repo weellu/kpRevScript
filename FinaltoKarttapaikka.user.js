@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Final to karttapaikka + reviewer map
 // @namespace    http://tampermonkey.net/
-// @version      0.95
+// @version      0.96
 // @description  Add Kansalaisen Karttapaikka links and an interactive MML/OSM/Google map (waypoints, range rings, road-owner overlay, swine fever zones, coordinate search) to the geocache review page
 // @author       Veli-Pekka Eloranta
 // @match        https://*.geocaching.com/*
@@ -14,6 +14,7 @@
 // @grant        GM_getResourceText
 // @grant        GM_addStyle
 // @grant        GM_xmlhttpRequest
+// @connect      avoin-paikkatieto.maanmittauslaitos.fi
 // @run-at       document-idle
 // @updateURL    https://github.com/weellu/kpRevScript/raw/main/FinaltoKarttapaikka.user.js
 // @downloadURL  https://github.com/weellu/kpRevScript/raw/main/FinaltoKarttapaikka.user.js
@@ -1168,8 +1169,8 @@
             if (!apiKey || typeof GM_xmlhttpRequest !== 'function') { done(null); return; }
             const url = 'https://avoin-paikkatieto.maanmittauslaitos.fi/geocoding/v2/pelias/' +
                 'reverse?point.lat=' + lat + '&point.lon=' + lon +
-                '&sources=geographic-names&lang=fi&size=1' +
-                '&boundary.circle.radius=25&api-key=' + encodeURIComponent(apiKey);
+                '&sources=geographic-names&lang=fi' +
+                '&api-key=' + encodeURIComponent(apiKey);
             GM_xmlhttpRequest({
                 method: 'GET',
                 url: url,
@@ -1177,16 +1178,28 @@
                 onload: function (r) {
                     try {
                         const f = JSON.parse(r.responseText).features[0];
+                        if (!f || !f.properties || !f.properties.region) {
+                            throw new Error('vastauksessa ei maakuntaa');
+                        }
                         done({ code: f.properties.region,
                                name: f.properties['label:region'],
                                kunta: f.properties['label:municipality'] });
                     } catch (e) {
-                        console.warn('[kpRevScript] maakuntaa ei saatu MML:n geokoodauksesta', e);
+                        console.warn('[kpRevScript] maakuntahaku epaonnistui: HTTP ' + r.status +
+                            ' ' + String(r.responseText).slice(0, 200), e);
                         done(null);
                     }
                 },
-                onerror: function () { done(null); },
-                ontimeout: function () { done(null); }
+                onerror: function (r) {
+                    console.warn('[kpRevScript] maakuntahaku ei tavoittanut MML:aa. ' +
+                        'Salliiko Tampermonkey yhteyden osoitteeseen ' +
+                        'avoin-paikkatieto.maanmittauslaitos.fi?', r);
+                    done(null);
+                },
+                ontimeout: function () {
+                    console.warn('[kpRevScript] maakuntahaku aikakatkaistiin');
+                    done(null);
+                }
             });
         }
 
