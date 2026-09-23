@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Final to karttapaikka + reviewer map
 // @namespace    http://tampermonkey.net/
-// @version      0.94
+// @version      0.95
 // @description  Add Kansalaisen Karttapaikka links and an interactive MML/OSM/Google map (waypoints, range rings, road-owner overlay, swine fever zones, coordinate search) to the geocache review page
 // @author       Veli-Pekka Eloranta
 // @match        https://*.geocaching.com/*
@@ -13,6 +13,7 @@
 // @grant        GM_registerMenuCommand
 // @grant        GM_getResourceText
 // @grant        GM_addStyle
+// @grant        GM_xmlhttpRequest
 // @run-at       document-idle
 // @updateURL    https://github.com/weellu/kpRevScript/raw/main/FinaltoKarttapaikka.user.js
 // @downloadURL  https://github.com/weellu/kpRevScript/raw/main/FinaltoKarttapaikka.user.js
@@ -523,7 +524,13 @@
             '.kp-asf-core a{color:#8b1a00;}' +
             '.kp-asf-zone{border-color:#b35806;background:#fff5e8;color:#6b3505;}' +
             '.kp-asf-zone .kp-asf-head{background:#b35806;}' +
-            '.kp-asf-zone a{color:#b35806;}');
+            '.kp-asf-zone a{color:#b35806;}' +
+            '.kp-region-note{margin:10px 0;border:2px solid #1f6fb2;border-radius:4px;' +
+            'overflow:hidden;font-size:13px;line-height:1.45;background:#eef6fc;color:#10405f;}' +
+            '.kp-region-note .kp-asf-head{background:#1f6fb2;padding:7px 12px;color:#fff;' +
+            'font-weight:bold;font-size:15px;letter-spacing:0.4px;}' +
+            '.kp-region-note .kp-asf-body{padding:9px 12px;}' +
+            '.kp-region-note b{white-space:nowrap;}');
 
         // Insert the map container in a sensible place on the review page
         const mapDiv = document.createElement('div');
@@ -1094,6 +1101,7 @@
         // --- Cache marker ------------------------------------------------
         const bounds = L.latLngBounds([[latitude, longitude]]);
         const asfPoints = [{ label: 'Nollapiste', lat: latitude, lon: longitude }];
+        let finalWp = null;   // waypoint type 220 = Final Location
 
         const cacheMarker = L.marker([latitude, longitude], { icon: pinIcon(cacheTypeId) }).addTo(map);
         cacheMarker.bindPopup(
@@ -1120,6 +1128,7 @@
             bounds.extend([wpLat, wpLon]);
             measurePoints.push(L.latLng(wpLat, wpLon)); // snap target for measuring
             asfPoints.push({ label: wpType, lat: wpLat, lon: wpLon });
+            if (wpTypeId === '220') { finalWp = { lat: wpLat, lon: wpLon }; }
         }
 
         if (waypointCount > 0) {
@@ -1143,6 +1152,67 @@
             asfInfected.bringToBack();
         }
         styleAsfForZoom();   // the view is final by now (fitBounds may have moved it)
+
+        // --- Multicache: is the final in another maakunta? ---------------
+        // Reviewer territories follow maakunta borders, so a multi whose final
+        // lands in the neighbouring one is worth a second look. The region
+        // comes from MML's geocoding service rather than from rings baked into
+        // this file: it is authoritative, always current, and costs no bytes.
+        //
+        // Two caveats. The service has no CORS headers, hence GM_xmlhttpRequest
+        // (which is not subject to them). And reverse geocoding returns the
+        // nearest *named place*, so within a few hundred metres of a maakunta
+        // border the answer can come from the wrong side -- close enough for a
+        // prompt to look, which is all this is.
+        function mmlRegion(lat, lon, done) {
+            if (!apiKey || typeof GM_xmlhttpRequest !== 'function') { done(null); return; }
+            const url = 'https://avoin-paikkatieto.maanmittauslaitos.fi/geocoding/v2/pelias/' +
+                'reverse?point.lat=' + lat + '&point.lon=' + lon +
+                '&sources=geographic-names&lang=fi&size=1' +
+                '&boundary.circle.radius=25&api-key=' + encodeURIComponent(apiKey);
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: url,
+                timeout: 12000,
+                onload: function (r) {
+                    try {
+                        const f = JSON.parse(r.responseText).features[0];
+                        done({ code: f.properties.region,
+                               name: f.properties['label:region'],
+                               kunta: f.properties['label:municipality'] });
+                    } catch (e) {
+                        console.warn('[kpRevScript] maakuntaa ei saatu MML:n geokoodauksesta', e);
+                        done(null);
+                    }
+                },
+                onerror: function () { done(null); },
+                ontimeout: function () { done(null); }
+            });
+        }
+
+        if (cacheTypeId === '3' && finalWp) {
+            let zero = undefined, fin = undefined;
+            const compare = function () {
+                if (zero === undefined || fin === undefined) return;   // still waiting
+                if (!zero || !fin || !zero.code || !fin.code) return;   // lookup failed
+                if (zero.code === fin.code) return;                     // same maakunta
+
+                const note = document.createElement('div');
+                note.className = 'kp-region-note';
+                note.innerHTML =
+                    '<div class="kp-asf-head">\u2139 Loppupiste on eri maakunnassa</div>' +
+                    '<div class="kp-asf-body">' +
+                    'Nollapiste: <b>' + zero.name + '</b> (' + zero.kunta + ')<br/>' +
+                    'Loppupiste: <b>' + fin.name + '</b> (' + fin.kunta + ')<br/>' +
+                    'Et\u00e4isyys: <b>' +
+                    fmtDist(map.distance(L.latLng(latitude, longitude),
+                                         L.latLng(finalWp.lat, finalWp.lon))) + '</b>' +
+                    '</div>';
+                mapDiv.parentNode.insertBefore(note, mapDiv);
+            };
+            mmlRegion(latitude, longitude, function (r) { zero = r; compare(); });
+            mmlRegion(finalWp.lat, finalWp.lon, function (r) { fin = r; compare(); });
+        }
 
         if (asfHits.length) {
             // The strictest zone any point falls in decides the banner: those
