@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Final to karttapaikka + reviewer map
 // @namespace    http://tampermonkey.net/
-// @version      0.97
+// @version      0.98
 // @description  Add Kansalaisen Karttapaikka links and an interactive MML/OSM/Google map (waypoints, range rings, road-owner overlay, swine fever zones, coordinate search) to the geocache review page
 // @author       Veli-Pekka Eloranta
 // @match        https://*.geocaching.com/*
@@ -1295,10 +1295,203 @@
     }
 
     // ---------------------------------------------------------------------
+    // Feature 6: "Saturaatio OK" link (off by default)
+    //
+    // Adds a link next to the reviewer's own Review note / Disable / Archive
+    // row. It opens the same Disable log form those links use -- geocaching
+    // preselects the log type from ?LogType=22 -- and drops a saved template
+    // into the text box, with a placeholder swapped for the cache's physical
+    // coordinates.
+    //
+    // The log page is a separate document (the links open in a new tab), so the
+    // text is handed over through Tampermonkey storage rather than the URL: the
+    // log form is an SPA and takes no text parameter. The handover is stamped
+    // with the GC code and a timestamp and is consumed once, so a stale entry
+    // can never leak into a different cache's log.
+    //
+    // Nothing is ever submitted. The reviewer still reads the draft and presses
+    // Post themselves.
+    // ---------------------------------------------------------------------
+    const SAT_ON    = 'sat_enabled';
+    const SAT_TEXT  = 'sat_text';
+    const SAT_TOKEN = 'sat_token';
+    const SAT_HAND  = 'sat_handoff';
+    const SAT_DEFAULT_TOKEN = 'XXXXXX';
+    const SAT_DEFAULT_TEXT = [
+        'Moikka,',
+        '',
+        'Koordinaateissa XXXXXX on tilaa uudelle kätkölle. Kätkökuvauksen sisältöä ei ole ' +
+        'tässä yhteydessä tarkistettu. Tällä GC-koodilla tehty saturaatiotarkastus varaa ' +
+        'paikkaa **kolmen kuukauden ajan**.',
+        '',
+        'Muistathan tutustua sekä [geokätkön piilottamisen ohjesääntöihin]' +
+        '(https://www.geocaching.com/play/guidelines), että [Suomen ja Ahvenanmaan ' +
+        'ohjeistukseen](https://gcwiki.atlassian.net/wiki/spaces/GEO/pages/532830/' +
+        'Finland+land+Islands) ennen kätkön piilottamista.',
+        '',
+        'Poistan kätkön julkaisujonosta, jotta voit rauhassa valmistella kätkön ' +
+        'julkaisukuntoon.',
+        '',
+        'Kun kätkö on paikoillaan ja kätkökuvaus valmis, saat kuvauksen julkaisujonoon ' +
+        'klikkaamalla kätkökuvaussivun yläreunassa "Resubmit for review (Lähetä ' +
+        'tarkastettavaksi)" -nappia.',
+        '',
+        'Ystävällisin terveisin,'
+    ].join('\n');
+
+    // Styles for the template editor. Injected at module level, not inside
+    // buildMap, because the editor opens from the Tampermonkey menu on any
+    // geocaching.com page, not just the review page.
+    GM_addStyle(
+        '.kp-sat-back{position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:100000;' +
+        'display:flex;align-items:center;justify-content:center;}' +
+        '.kp-sat-box{background:#fff;border-radius:6px;padding:14px;width:min(760px,92vw);' +
+        'box-shadow:0 6px 30px rgba(0,0,0,0.4);font:13px/1.45 system-ui,sans-serif;}' +
+        '.kp-sat-title{font-weight:bold;margin-bottom:8px;color:#222;}' +
+        '.kp-sat-box textarea{width:100%;height:46vh;box-sizing:border-box;padding:8px;' +
+        'font:12px/1.5 ui-monospace,Menlo,Consolas,monospace;border:1px solid #bbb;' +
+        'border-radius:4px;resize:vertical;}' +
+        '.kp-sat-row{margin-top:10px;display:flex;gap:8px;justify-content:flex-end;}' +
+        '.kp-sat-row button{padding:6px 14px;border:1px solid #bbb;border-radius:4px;' +
+        'background:#f2f2f2;cursor:pointer;}' +
+        '.kp-sat-row button.kp-sat-save{background:#4a90d9;border-color:#3c7cbd;color:#fff;}' +
+        '#kp-sat-link{margin-left:6px;}');
+
+    function satEnabled() { return GM_getValue(SAT_ON, false) === true; }
+    function satText()    { return GM_getValue(SAT_TEXT, SAT_DEFAULT_TEXT); }
+    function satToken()   { return GM_getValue(SAT_TOKEN, SAT_DEFAULT_TOKEN); }
+
+    // A small modal, because the template is many paragraphs of markdown and a
+    // browser prompt() mangles that.
+    function satEditDialog(title, value, onSave) {
+        const back = document.createElement('div');
+        back.className = 'kp-sat-back';
+        const box = document.createElement('div');
+        box.className = 'kp-sat-box';
+        const h = document.createElement('div');
+        h.className = 'kp-sat-title';
+        h.textContent = title;
+        const ta = document.createElement('textarea');
+        ta.value = value;
+        const row = document.createElement('div');
+        row.className = 'kp-sat-row';
+        const cancel = document.createElement('button');
+        cancel.textContent = 'Peruuta';
+        const save = document.createElement('button');
+        save.textContent = 'Tallenna';
+        save.className = 'kp-sat-save';
+        row.appendChild(cancel); row.appendChild(save);
+        box.appendChild(h); box.appendChild(ta); box.appendChild(row);
+        back.appendChild(box);
+        document.body.appendChild(back);
+        ta.focus();
+        const close = function () { back.remove(); };
+        cancel.addEventListener('click', close);
+        back.addEventListener('click', function (e) { if (e.target === back) close(); });
+        save.addEventListener('click', function () { onSave(ta.value); close(); });
+    }
+
+    GM_registerMenuCommand('Saturaatio OK -nappi: ' + (satEnabled() ? 'ota pois' : 'ota käyttöön'),
+        function () {
+            GM_setValue(SAT_ON, !satEnabled());
+            location.reload();
+        });
+    GM_registerMenuCommand('Muokkaa saturaatiotekstiä', function () {
+        satEditDialog('Saturaatio OK -lokiteksti. ' +
+            'Merkkijono "' + satToken() + '" korvataan koordinaateilla.',
+            satText(), function (v) { GM_setValue(SAT_TEXT, v); });
+    });
+    GM_registerMenuCommand('Aseta koordinaattien paikkamerkki', function () {
+        const v = prompt('Merkkijono, joka korvataan koordinaateilla:', satToken());
+        if (v !== null && v.trim()) { GM_setValue(SAT_TOKEN, v.trim()); }
+    });
+
+    // Physical containers only: 219 = Stages of a Multicache, 220 = Final
+    // Location. Question to Answer, Parking, Trailhead and Reference Point have
+    // nothing buried at them, so they do not take up saturation space.
+    function satCoordinates(data) {
+        const out = [];
+        const n = parseInt(data.getAttribute('data-wp_count'), 10) || 0;
+        for (let i = 0; i < n; i++) {
+            const t = data.getAttribute('data-wp_' + i + '_type');
+            if (t !== '219' && t !== '220') continue;
+            const la = parseFloat(data.getAttribute('data-wp_' + i + '_latitude'));
+            const lo = parseFloat(data.getAttribute('data-wp_' + i + '_longitude'));
+            if (!isNaN(la) && !isNaN(lo)) { out.push(formatDdm(la, lo)); }
+        }
+        if (!out.length) {
+            // A traditional (or anything without stages): the posted coordinates
+            // are the ones the saturation check is about.
+            const la = parseFloat(data.getAttribute('data-latitude'));
+            const lo = parseFloat(data.getAttribute('data-longitude'));
+            if (!isNaN(la) && !isNaN(lo)) { out.push(formatDdm(la, lo)); }
+        }
+        return out.join(', ');
+    }
+
+    function addSaturationLink() {
+        if (!satEnabled()) return;
+        const data = document.querySelector('#ctl00_ContentBody_CacheDataControl1_CacheData');
+        const disable = document.getElementById('ctl00_ContentBody_lnkDisable');
+        if (!data || !disable || document.getElementById('kp-sat-link')) return;
+
+        const row = disable.closest('li');
+        const gc = data.getAttribute('data-gccode');
+        const link = document.createElement('a');
+        link.id = 'kp-sat-link';
+        link.href = disable.getAttribute('href');   // same Disable form, LogType=22
+        link.target = disable.target || '_blank';
+        link.title = 'Avaa Disable-loki saturaatiotekstillä';
+        link.textContent = 'Saturaatio OK';
+        link.addEventListener('click', function () {
+            GM_setValue(SAT_HAND, {
+                gc: gc,
+                text: satText().split(satToken()).join(satCoordinates(data)),
+                at: Date.now()
+            });
+        });
+        row.appendChild(document.createTextNode('\n                        '));
+        row.appendChild(link);
+    }
+
+    // On the log page: drop the prepared text in, once.
+    function fillSaturationLog() {
+        // Gated on the setting as well, not just on a handoff being present:
+        // switching the feature off between the click and the log page opening
+        // should leave the log form untouched.
+        if (!satEnabled()) return;
+        const hand = GM_getValue(SAT_HAND, null);
+        if (!hand || !hand.text) return;
+        GM_deleteValue(SAT_HAND);                       // consume it either way
+        if (Date.now() - hand.at > 120000) return;      // stale: a different errand
+        const m = location.pathname.match(/\/geocache\/(GC[0-9A-Z]+)/i);
+        if (m && hand.gc && m[1].toUpperCase() !== hand.gc.toUpperCase()) return;
+
+        let tries = 0;
+        const timer = setInterval(function () {
+            const ta = document.getElementById('gc-md-editor_md');
+            if (ta) {
+                clearInterval(timer);
+                // The editor is framework-driven, so poke the native setter and
+                // let it hear an input event; assigning .value alone is ignored.
+                const setter = Object.getOwnPropertyDescriptor(
+                    window.HTMLTextAreaElement.prototype, 'value').set;
+                setter.call(ta, hand.text);
+                ta.dispatchEvent(new Event('input', { bubbles: true }));
+                ta.dispatchEvent(new Event('change', { bubbles: true }));
+            } else if (++tries > 75) {
+                clearInterval(timer);
+                console.warn('[kpRevScript] lokikentta ei ilmestynyt, saturaatiotekstia ei lisatty');
+            }
+        }, 200);
+    }
+
+    // ---------------------------------------------------------------------
     // Init
     // ---------------------------------------------------------------------
     function init() {
         addWaypointLinks();
+        fillSaturationLog();
 
         const onReviewPage = /\/admin\/review\.aspx/i.test(location.pathname);
         const hasCacheData = document.querySelector('#ctl00_ContentBody_CacheDataControl1_CacheData');
@@ -1316,6 +1509,7 @@
             }
         }
 
+        addSaturationLink();
         buildMap();
     }
 
