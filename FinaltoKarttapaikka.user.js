@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Final to karttapaikka + reviewer map
 // @namespace    http://tampermonkey.net/
-// @version      0.96
+// @version      0.97
 // @description  Add Kansalaisen Karttapaikka links and an interactive MML/OSM/Google map (waypoints, range rings, road-owner overlay, swine fever zones, coordinate search) to the geocache review page
 // @author       Veli-Pekka Eloranta
 // @match        https://*.geocaching.com/*
@@ -105,15 +105,16 @@
     //
     // One infected zone (tartuntavyohyke) with a stricter core (ydinalue)
     // inside it. The zones are published as PDF only -- there is no geodata
-    // service -- so these rings are rebuilt from the decisions of 1.9.2026 and
-    // 10.9.2026 (dnro 5763/04.01.02.00.02/2026). The 10.9 decision changed only
-    // the restrictions (items 7, 8 and 18); the zone wording is word-for-word
-    // the same, so the rings below are unchanged:
+    // service -- so these rings come from the decision of 15.10.2026
+    // (dnro 5763/04.01.02.00.02/2026) and its map annex:
     //
-    //   * ydinalue -- unchanged since 14.8.2026. Bounded in the west/north by
-    //     Keipintie, Vaalimaantie, Mattilantie, Vaalimaanvayla, seututie 387
-    //     and Tohmonmaentie, in the east by the national border and in the
-    //     south by the sea. Traced from those OSM ways.
+    //   * ydinalue -- extended northeast on 24.9.2026 and again on 15.10.2026,
+    //     from 48 to 213 km2. Bounded by the national border in the southeast,
+    //     the sea (Virolahti) and Keipintie / seututie 170 / Mattilantie in the
+    //     south and southwest, then Vaalimaanvayla to the seututie 387
+    //     junction, 387 up to Rummuntie, Rummuntie southeast to the Tervajoki
+    //     bridge and Tervajoki on to the border. Islands in those waters are
+    //     outside the core zone.
     //   * tartuntavyohyke -- Virolahti, Miehikkala, Kotka, Hamina and Pyhtaa in
     //     full, plus the part of Lappeenranta south of the railway to
     //     Vainikkala, plus the parts of Loviisa, Lapinjarvi and Kouvola south
@@ -124,44 +125,73 @@
     //     paths (georeferenced against the known Virolahti/Miehikkala/
     //     Lappeenranta part at IoU 0.995, so the line is the official one).
     //
-    // The 1.9.2026 decision dropped the short-lived split into areas A and B
-    // and named those five municipalities "kokonaan"; the map annex on the site
-    // is still the 28.8.2026 one, which draws the zone on land only. The rings
-    // here follow the decision text and include the sea. The 10.9.2026 decision
-    // settles that this is right: it lifts the dog rules specifically on "the
-    // zone's sea areas and the islands and skerries in them", which only makes
-    // sense if those waters are inside the zone to begin with.
+    // The 15.10.2026 annex is vector, so the core zone was lifted straight out
+    // of it; georeferencing it against the known infected zone matches to an
+    // IoU of 0.992 over land. That annex draws the infected zone reaching the
+    // territorial-sea line rather than the municipal limit, which is 372 km2 of
+    // open water further out than the ring below. Every square metre of that
+    // lies beyond any municipality, so it was left alone: no cache can sit
+    // there, and the land and archipelago coverage is identical either way.
+    //
+    // The archipelago is inside the zone. Both the 10.9 and 15.10 decisions
+    // lift the dog and hunting rules specifically on "the zone's sea areas and
+    // the islands and skerries in them", which only makes sense if those waters
+    // are in the zone to begin with.
     //
     // Not official geodata: confirm from the annex before deciding, and rebuild
     // these rings whenever the decision changes.
     //
     // Ring coordinates are [lon, lat].
     // ---------------------------------------------------------------------
-    const ASF_UPDATED = '10.9.2026';
+    const ASF_UPDATED = '15.10.2026';
     const ASF_INFO_URL = 'https://www.ruokavirasto.fi/elaimet/elainten-terveys-ja-elaintaudit/' +
         'elaintaudit/siat/afrikkalainen-sikarutto/asf-suomessa-2026/';
     const ASF_MAP_URL = 'https://www.ruokavirasto.fi/globalassets/elaimet/' +
-        'elainten-terveys-ja-elaintaudit/elaintaudit/asf/asf_kartta_vyohykeajab1_kunnat2.pdf';
+        'elainten-terveys-ja-elaintaudit/elaintaudit/asf/asf_kartta_2026_10_15__1.pdf';
 
     const ASF_ZONES = {
         ydinalue: [
-            [27.87352,60.6046],[27.84795,60.5824],[27.84775,60.58179],[27.84216,60.5817],[27.84212,60.5801],[27.84101,60.57986],
-            [27.84007,60.57929],[27.84003,60.57884],[27.83844,60.57846],[27.83857,60.57773],[27.84087,60.57733],[27.84203,60.57662],
-            [27.84167,60.56308],[27.83559,60.56016],[27.8211,60.5567],[27.81389,60.55675],[27.81265,60.55498],[27.80171,60.54973],
-            [27.79931,60.54974],[27.79567,60.54799],[27.79564,60.54681],[27.79199,60.54505],[27.78239,60.54511],[27.77883,60.54691],
-            [27.77415,60.55166],[27.7742,60.55403],[27.77183,60.55522],[27.77214,60.56823],[27.76742,60.5718],[27.76748,60.57417],
-            [27.76513,60.57654],[27.75801,60.58013],[27.75803,60.58131],[27.75727,60.5817],[27.7511,60.5817],[27.75108,60.5826],
-            [27.75007,60.58387],[27.75028,60.58425],[27.7477,60.58658],[27.74472,60.58837],[27.74463,60.58973],[27.74806,60.59051],
-            [27.74739,60.59212],[27.74586,60.59355],[27.74618,60.5951],[27.75033,60.59769],[27.7527,60.59868],[27.75416,60.60288],
-            [27.75596,60.60476],[27.75586,60.60569],[27.76642,60.60718],[27.77364,60.60884],[27.7837,60.61165],[27.7913,60.61285],
-            [27.79765,60.61306],[27.80384,60.61258],[27.81018,60.61159],[27.81643,60.61007],[27.81681,60.61137],[27.82374,60.61302],
-            [27.8273,60.6144],[27.82984,60.61594],[27.83146,60.61745],[27.83261,60.6194],[27.83341,60.62235],[27.83505,60.62433],
-            [27.83672,60.62552],[27.84337,60.62906],[27.84921,60.63278],[27.85519,60.63542],[27.86014,60.63665],[27.87156,60.63752],
-            [27.87437,60.6382],[27.87657,60.63931],[27.87838,60.64097],[27.88029,60.64431],[27.88805,60.64896],[27.8894,60.65042],
-            [27.88958,60.6519],[27.88549,60.65684],[27.88573,60.65791],[27.88826,60.66054],[27.89298,60.66004],[27.89515,60.65897],
-            [27.89617,60.6576],[27.89821,60.65687],[27.90391,60.65691],[27.90495,60.65513],[27.90386,60.65408],[27.90402,60.65355],
-            [27.90852,60.65082],[27.91227,60.64932],[27.91245,60.64852],[27.91327,60.64737],[27.91776,60.64614],[27.93004,60.63545],
-            [27.87352,60.6046]
+            [27.84745,60.56145],[27.81404,60.5543],[27.79544,60.54519],[27.78634,60.54535],[27.78399,60.54468],[27.78277,60.54635],
+            [27.78344,60.5479],[27.78076,60.54852],[27.77445,60.55068],[27.77257,60.55223],[27.77266,60.55343],[27.77381,60.55368],
+            [27.77616,60.55268],[27.77901,60.55268],[27.77884,60.55389],[27.7796,60.55432],[27.77796,60.55572],[27.77705,60.55819],
+            [27.7769,60.56074],[27.77642,60.56184],[27.77528,60.56296],[27.77258,60.56378],[27.76917,60.56693],[27.76895,60.56856],
+            [27.76834,60.56987],[27.76606,60.57154],[27.76447,60.57352],[27.76483,60.57549],[27.76671,60.57688],[27.76678,60.5778],
+            [27.76783,60.57871],[27.76755,60.57952],[27.76367,60.58094],[27.75678,60.58031],[27.75336,60.57945],[27.75173,60.57951],
+            [27.75203,60.5806],[27.75128,60.58175],[27.75103,60.58294],[27.75021,60.58395],[27.75048,60.58425],[27.74775,60.58679],
+            [27.74485,60.58848],[27.7451,60.58931],[27.74467,60.58981],[27.74828,60.59057],[27.7477,60.5914],[27.74786,60.59185],
+            [27.74598,60.59383],[27.74624,60.59502],[27.75058,60.59781],[27.75239,60.59829],[27.75315,60.59882],[27.75432,60.60296],
+            [27.75465,60.60359],[27.75587,60.60439],[27.75608,60.6057],[27.76704,60.60725],[27.78429,60.61175],[27.78875,60.61255],
+            [27.79511,60.61305],[27.80012,60.61299],[27.80652,60.61223],[27.81511,60.61056],[27.81683,60.61141],[27.82484,60.61343],
+            [27.82952,60.6157],[27.83111,60.61711],[27.83222,60.61845],[27.83367,60.6228],[27.83601,60.62512],[27.84126,60.62789],
+            [27.84819,60.63228],[27.851,60.63369],[27.85597,60.63571],[27.86015,60.63676],[27.87266,60.63776],[27.87618,60.63907],
+            [27.87878,60.64128],[27.87987,60.64393],[27.88094,60.64492],[27.88851,60.64927],[27.88957,60.6504],[27.88937,60.65228],
+            [27.88572,60.65633],[27.88548,60.65759],[27.89681,60.66918],[27.89935,60.67346],[27.90045,60.67455],[27.90159,60.67526],
+            [27.90447,60.67614],[27.91421,60.67637],[27.91583,60.67666],[27.92508,60.67984],[27.92707,60.68093],[27.93371,60.68689],
+            [27.93374,60.69641],[27.93571,60.70005],[27.93487,60.70358],[27.93505,60.70435],[27.9369,60.70681],[27.94753,60.71117],
+            [27.97206,60.72263],[27.99154,60.7256],[27.99657,60.72738],[28.00158,60.73041],[28.00375,60.73281],[28.00418,60.73379],
+            [28.00442,60.73586],[28.00352,60.73798],[27.99894,60.74589],[27.99456,60.75041],[27.98716,60.75585],[27.98387,60.75942],
+            [27.98162,60.76134],[27.98056,60.7627],[27.97994,60.76424],[27.97984,60.76566],[27.98025,60.76715],[27.98407,60.77393],
+            [27.9868,60.77634],[27.98952,60.77789],[27.99134,60.77933],[27.99277,60.78086],[27.99505,60.78491],[27.9966,60.78641],
+            [27.99864,60.78762],[28.00405,60.78924],[28.01881,60.79063],[28.02334,60.79163],[28.02663,60.79272],[28.03117,60.79517],
+            [28.03901,60.80177],[28.04626,60.80628],[28.04976,60.80929],[28.05245,60.81061],[28.06574,60.81455],[28.08125,60.81738],
+            [28.086,60.81883],[28.08919,60.82038],[28.09274,60.82333],[28.09633,60.82813],[28.09953,60.83126],[28.10328,60.83362],
+            [28.1094,60.83635],[28.11355,60.83924],[28.11532,60.84233],[28.11706,60.84438],[28.11998,60.84646],[28.12367,60.84834],
+            [28.12521,60.84997],[28.12644,60.85302],[28.12773,60.85474],[28.13138,60.85824],[28.13564,60.85743],[28.13884,60.85784],
+            [28.1435,60.85627],[28.14545,60.85496],[28.15176,60.85334],[28.1546,60.85202],[28.15664,60.8515],[28.15913,60.85018],
+            [28.16303,60.84885],[28.16493,60.84852],[28.16542,60.8481],[28.16998,60.84701],[28.17329,60.84544],[28.17647,60.84271],
+            [28.17677,60.84184],[28.17732,60.84147],[28.18162,60.83977],[28.18611,60.83864],[28.18771,60.8372],[28.18776,60.8354],
+            [28.18849,60.83454],[28.18804,60.83367],[28.18946,60.83274],[28.19023,60.83278],[28.19046,60.83253],[28.18977,60.83241],
+            [28.19011,60.83221],[28.19147,60.8326],[28.19151,60.83196],[28.19716,60.83081],[28.19732,60.83037],[28.19901,60.83001],
+            [28.19914,60.82968],[28.19846,60.82953],[28.19849,60.82929],[28.20045,60.82946],[28.20068,60.82914],[28.20021,60.82849],
+            [28.20208,60.82845],[28.20351,60.82728],[28.21,60.827],[28.21364,60.82577],[28.21665,60.82515],[28.22236,60.82269],
+            [28.22542,60.82197],[28.2288,60.82057],[28.23355,60.81966],[28.23377,60.81975],[28.2336,60.82032],[28.23691,60.81907],
+            [28.23677,60.81841],[28.23919,60.81789],[28.23984,60.81708],[28.24107,60.81687],[28.24053,60.81648],[28.24076,60.81629],
+            [28.24277,60.8163],[28.24307,60.8154],[28.24411,60.81524],[28.24373,60.8149],[28.24862,60.8135],[28.25183,60.81146],
+            [28.25386,60.81072],[28.25436,60.81012],[28.25593,60.80999],[28.22021,60.78275],[28.17388,60.77857],[28.1582,60.76346],
+            [28.13547,60.74079],[28.08847,60.7207],[28.01541,60.68244],[28.01771,60.68123],[27.99807,60.67046],[27.99536,60.6712],
+            [27.87354,60.6047],[27.84804,60.58252],[27.84823,60.5819],[27.84453,60.58076],[27.84393,60.57999],[27.84157,60.58011],
+            [27.83849,60.57839],[27.83851,60.57797],[27.84129,60.57745],[27.8449,60.57496],[27.84415,60.57247],[27.84173,60.5693],
+            [27.84298,60.56691],[27.84259,60.56667],[27.84248,60.5655],[27.84478,60.56289],[27.84706,60.56195],[27.84745,60.56145]
         ],
         tartuntavyohyke: [
             [26.45242,60.47782],[26.45253,60.47172],[26.44651,60.46171],[26.45622,60.45232],[26.45825,60.43152],[26.44049,60.41979],
@@ -285,24 +315,28 @@
         return null;
     }
 
-    // What each zone is called and what it forbids, per the 10.9.2026 decision.
-    // Dogs tightened again relative to 1.9: across the whole zone they must now
-    // be leashed or immediately leashable, and hounds may not be loose at all.
-    // Moving about on foot is still unrestricted outside the core zone, and the
-    // dog rules are explicitly lifted on the zone's sea areas and islands.
+    // What each zone is called and what it forbids, per the 15.10.2026 decision.
+    // The core zone was cut right back on 24.9 and again on 15.10: moving about
+    // off the roads, picking berries and mushrooms and doing forestry work are
+    // no longer banned there at all. What is left is about dogs, events and
+    // washing up on the way out. Across the whole zone the event bans now also
+    // spare built-up areas.
     const ASF_INFO = {
         ydinalue: {
             css: 'kp-asf-core',
             head: '\u26d4 SIKARUTON YDINALUE \u2013 tiukimmat rajoitukset',
             name: 'ydinalue',
-            rules: ['<b>Maastossa liikkuminen jalan tai ajoneuvolla muutoin kuin teit\u00e4 ' +
-                    'pitkin on kielletty.</b>',
-                    'Koirien ulkoiluttaminen muutoin kuin teit\u00e4 pitkin kytkettyn\u00e4 on ' +
-                    'kielletty, lukuun ottamatta aidattuja koirametsi\u00e4.',
-                    'Sienestys ja marjastus on kielletty.',
-                    'Mets\u00e4taloustyöt ja koneellinen maanmuokkaus on kielletty.',
+            rules: ['Koirien ulkoiluttaminen muutoin kuin kytkettyn\u00e4 on kielletty, ja ' +
+                    'koirat on pest\u00e4v\u00e4 ennen ydinalueelta poistumista, ellei ' +
+                    'ulkoilutus ole tapahtunut vain teit\u00e4 pitkin. Ei koske aidattuja ' +
+                    'koirametsi\u00e4.',
                     'Yleis\u00f6-, urheilu- ja koiratapahtumien j\u00e4rjest\u00e4minen on ' +
-                    'kielletty koosta riippumatta.']
+                    'kielletty. Kielto ei koske taajamia.',
+                    'Maastossa liikkuvien on vaihdettava jalkineensa tai pest\u00e4v\u00e4 ja ' +
+                    'desinfioitava ne ennen ydinalueelta poistumista.',
+                    '<b>Maastossa liikkumista, marjastusta, sienestyst\u00e4 tai ' +
+                    'mets\u00e4taloust\u00f6it\u00e4 ei en\u00e4\u00e4 ole kielletty</b> ' +
+                    '(muutokset 24.9. ja 15.10.2026).']
         },
         tartuntavyohyke: {
             css: 'kp-asf-zone',
@@ -315,14 +349,14 @@
                     'Maastossa j\u00e4rjestett\u00e4v\u00e4t koiratapahtumat on kielletty, ellei ' +
                     'koiria pidet\u00e4 kytkettyn\u00e4 ja osallistujia ole enint\u00e4\u00e4n sata.',
                     'Maastossa j\u00e4rjestett\u00e4v\u00e4t yleis\u00f6- ja urheilutapahtumat on ' +
-                    'kielletty, jos osallistujia on yli sata.',
+                    'kielletty, jos osallistujia on yli sata. Kielto ei koske taajamia.',
                     'Maaston kulottaminen on kielletty.',
-                    'Mets\u00e4stys on kielletty; poikkeuksina ydinalueen ulkopuolella pienpetojen ' +
-                    'loukku- ja rautapyynti, valkoposkihanhien suojamets\u00e4stys, hirvien ' +
-                    'vahtimismets\u00e4stys pelloilla sek\u00e4 merimetsot ja hylkeet.',
-                    '<b>Maastossa liikkumista jalan ei ole rajoitettu ydinalueen ulkopuolella.</b> ' +
-                    'Koirarajoitukset eiv\u00e4t my\u00f6sk\u00e4\u00e4n koske vy\u00f6hykkeen ' +
-                    'merialueita eiv\u00e4tk\u00e4 niill\u00e4 sijaitsevia saaria ja luotoja.']
+                    'Mets\u00e4stys on p\u00e4\u00e4s\u00e4\u00e4nt\u00f6isesti kielletty; ' +
+                    'ydinalueen ulkopuolella on useita poikkeuksia (mm. pienpetopyynti, ' +
+                    'hirviel\u00e4inten vahtimis- ja hiipimismets\u00e4stys).',
+                    '<b>Maastossa liikkumista jalan ei ole rajoitettu.</b> Koira- ja ' +
+                    'mets\u00e4stysrajoitukset eiv\u00e4t koske vy\u00f6hykkeen merialueita ' +
+                    'eiv\u00e4tk\u00e4 niill\u00e4 sijaitsevia saaria ja luotoja.']
         }
     };
 
