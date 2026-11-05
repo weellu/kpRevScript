@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Enhanced Litmus View
 // @namespace    http://tampermonkey.net/
-// @version      1.02
+// @version      1.03
 // @description  Add MML/OSM/Google map layers, road-owner & cadastral overlays, distance measurement and a WGS84 DDM coordinate picker to the reviewer Litmus Test page; hide the page bottom bar and rebuild its Query Radius control under the map
 // @author       Veli-Pekka Eloranta
 // @match        https://admin.geocaching.com/LitmusTest/*
@@ -386,7 +386,11 @@
             'color:#222;border-bottom:1px solid #f0f0f0;cursor:pointer;}' +
             '.kp-list-row:hover{background:#eef6ff;}' +
             '.kp-list-row img{width:16px;height:16px;flex:0 0 16px;object-fit:contain;}' +
+            '.kp-list-row>span{flex:1 1 auto;min-width:0;}' +
             '.kp-list-row small{color:#888;}' +
+            '.kp-dist{flex:0 0 auto;color:#0b60b0;font-weight:bold;white-space:nowrap;' +
+            'font-variant-numeric:tabular-nums;}' +
+            '.kp-list-h small{font-weight:normal;color:#777;}' +
             '.kp-list-row.kp-arch{opacity:0.55;}' +
             // Marker highlight tints: reviewed=gold, warning=red, archived=grey.
             '.kp-hl-gold{filter:drop-shadow(0 0 3px #f59f00) drop-shadow(0 0 3px #f59f00);}' +
@@ -729,7 +733,13 @@
             if (!coordMarker) {
                 coordMarker = L.circleMarker(ll, { radius: 6, color: '#e03131', weight: 2, fillColor: '#e03131', fillOpacity: 0.6 }).addTo(map);
             } else { coordMarker.setLatLng(ll); }
-            coordMarker.bindPopup(txt).openPopup();
+            // The dropped point is also the reference every listed point
+            // measures itself against.
+            applyDistances(ll);
+            const near = nearestTo(ll);
+            coordMarker.bindPopup(txt + (near ? '<br><b>Lähin:</b> ' +
+                escapeHtml(near.p.name || near.p.parentCacheName || 'piste') +
+                ' · ' + fmtDist(near.d) : '')).openPopup();
         }
         function stopCoordMode() {
             map.off('click', onCoordClick);
@@ -740,6 +750,7 @@
         function clearCoord() {
             if (coordBoxCtl) { map.removeControl(coordBoxCtl); coordBoxCtl = null; coordInput = null; }
             if (coordMarker) { map.removeLayer(coordMarker); coordMarker = null; }
+            applyDistances(null);
         }
         coordLink = iconButton(COORD_ICON, 'Poimi koordinaatit', function (link) {
             if (coordActive) { stopCoordMode(); clearCoord(); return; }
@@ -810,7 +821,8 @@
             } else {
                 marker = L.circleMarker(ll, { radius: 6, color: isOurs ? '#c92a2a' : '#1971c2', weight: 2, fillOpacity: 0.85 });
             }
-            marker.addTo(map).bindPopup(pointPopup(p));
+            p._popupHtml = pointPopup(p);
+            marker.addTo(map).bindPopup(p._popupHtml);
             p._marker = marker;
 
             if (isOurs) {
@@ -859,6 +871,7 @@
         listDiv.appendChild(filterBar);
 
         let neighbourHeader = null;
+        const sections = [];
         function listSection(titleText, pts, isNeighbours) {
             if (!pts.length) return;
             const h = document.createElement('div');
@@ -866,7 +879,14 @@
             h.textContent = titleText + ' (' + pts.length + ')';
             listDiv.appendChild(h);
             if (isNeighbours) { neighbourHeader = h; }
-            pts.forEach(function (p) {
+            // Rows live in their own container so they can be re-ordered by
+            // distance without disturbing the headers around them.
+            const body = document.createElement('div');
+            body.className = 'kp-list-body';
+            listDiv.appendChild(body);
+            sections.push({ body: body, pts: pts, sortable: !!isNeighbours });
+            pts.forEach(function (p, i) {
+                p._order = i;
                 const row = document.createElement('a');
                 row.className = 'kp-list-row' + (p.isArchived ? ' kp-arch' : '');
                 row.href = '#';
@@ -874,6 +894,10 @@
                 const gc = p.gcCode || p.parentCacheGCCode || '';
                 row.innerHTML = (iconUrl ? '<img src="' + iconUrl + '">' : '') +
                     '<span>' + escapeHtml(p.name || 'Piste') + (gc ? ' <small>' + escapeHtml(gc) + '</small>' : '') + '</span>';
+                const distEl = document.createElement('small');
+                distEl.className = 'kp-dist';
+                row.appendChild(distEl);
+                p._distEl = distEl;
                 row.addEventListener('click', function (e) {
                     e.preventDefault();
                     if (p._ll) {
@@ -881,7 +905,7 @@
                         if (p._marker && p._marker.openPopup) { p._marker.openPopup(); }
                     }
                 });
-                listDiv.appendChild(row);
+                body.appendChild(row);
                 p._listRow = row;
             });
         }
@@ -897,10 +921,56 @@
                     if (hide && map.hasLayer(p._marker)) { map.removeLayer(p._marker); }
                     else if (!hide && !map.hasLayer(p._marker)) { map.addLayer(p._marker); }
                 }
+                p._hidden = hide;
                 if (p._listRow) { p._listRow.style.display = hide ? 'none' : ''; }
                 if (!hide) { visible++; }
             });
-            if (neighbourHeader) { neighbourHeader.textContent = 'Naapurit (' + visible + '/' + collected.others.length + ')'; }
+            if (neighbourHeader) {
+                neighbourHeader.textContent = 'Naapurit (' + visible + '/' + collected.others.length + ')';
+                if (distRef) {
+                    const note = document.createElement('small');
+                    note.textContent = ' · lähimmät ensin';
+                    neighbourHeader.appendChild(note);
+                }
+            }
+        }
+
+        // --- Distances to a point dropped on the map ----------------------
+        // The coordinate picker's point doubles as a reference point: every
+        // cache and waypoint in the list shows its distance to it, each
+        // marker popup gets the same line, and the neighbour list sorts
+        // nearest first. Clearing the point restores the page's own order.
+        let distRef = null;
+        function applyDistances(ll) {
+            distRef = ll || null;
+            collected.ours.concat(collected.others).forEach(function (p) {
+                p._dist = (distRef && p._ll) ? distRef.distanceTo(p._ll) : null;
+                if (p._distEl) { p._distEl.textContent = p._dist == null ? '' : fmtDist(p._dist); }
+                if (p._marker && p._popupHtml && p._marker.setPopupContent) {
+                    p._marker.setPopupContent(p._popupHtml + (p._dist == null ? '' :
+                        '<br><b>Etäisyys pisteestä:</b> ' + fmtDist(p._dist)));
+                }
+            });
+            sections.forEach(function (sec) {
+                if (!sec.sortable) return;
+                const rows = sec.pts.slice();
+                if (distRef) { rows.sort(function (a, b) { return (a._dist == null ? Infinity : a._dist) - (b._dist == null ? Infinity : b._dist); }); }
+                else { rows.sort(function (a, b) { return a._order - b._order; }); }
+                rows.forEach(function (p) { if (p._listRow) { sec.body.appendChild(p._listRow); } });
+            });
+            applyFilters();
+        }
+
+        // Nearest point that the filters leave visible — shown in the
+        // dropped point's own popup.
+        function nearestTo(ll) {
+            let best = null;
+            collected.others.concat(collected.ours).forEach(function (p) {
+                if (!p._ll || p._hidden) return;
+                const d = ll.distanceTo(p._ll);
+                if (!best || d < best.d) { best = { d: d, p: p }; }
+            });
+            return best;
         }
         applyFilters(); // apply any persisted selections on load
 
