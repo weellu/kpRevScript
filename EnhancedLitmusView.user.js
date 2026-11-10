@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Enhanced Litmus View
 // @namespace    http://tampermonkey.net/
-// @version      1.04
-// @description  Add MML/OSM/Google map layers, road-owner & cadastral overlays, distance measurement and a WGS84 DDM coordinate picker to the reviewer Litmus Test page; hide the page bottom bar and rebuild its Query Radius control under the map
+// @version      1.05
+// @description  Add MML/OSM/Google map layers, road-owner & cadastral overlays, distance measurement and a WGS84 DDM coordinate picker to the reviewer Litmus Test page; hide the page bottom bar and rebuild its Query Radius control under the map; suggest free (non-saturating) spots for a cache that fails the 161 m rule
 // @author       Veli-Pekka Eloranta
 // @match        https://admin.geocaching.com/LitmusTest/*
 // @require      https://unpkg.com/leaflet@1.9.4/dist/leaflet.js
@@ -15,6 +15,9 @@
 // @grant        GM_addStyle
 // @grant        GM_setClipboard
 // @grant        unsafeWindow
+// @grant        GM_xmlhttpRequest
+// @connect      overpass-api.de
+// @connect      overpass.kumi.systems
 // @run-at       document-start
 // @updateURL    https://github.com/weellu/kpRevScript/raw/main/EnhancedLitmusView.user.js
 // @downloadURL  https://github.com/weellu/kpRevScript/raw/main/EnhancedLitmusView.user.js
@@ -237,6 +240,20 @@
     // own query logic runs untouched.
     // ---------------------------------------------------------------------
     const RADIUS_RE = /\d[\d.,]*\s*(mi|miles?|km|m|ft|feet|meters?)\b/i;
+    // The page only queries neighbours inside this radius, so anything the
+    // free-spot search suggests near its edge is checked against incomplete
+    // data. Parsed from the radius control's own label, in metres.
+    let knownRadius = null;
+    function parseRadius(label) {
+        const m = String(label || '').match(/([\d]+(?:[.,][\d]+)?)\s*(mi|miles?|km|m|ft|feet|meters?)/i);
+        if (!m) return null;
+        const v = parseFloat(m[1].replace(',', '.'));
+        const u = m[2].toLowerCase();
+        if (u.indexOf('mi') === 0) return v * 1609.344;
+        if (u === 'km') return v * 1000;
+        if (u.indexOf('f') === 0) return v * 0.3048;
+        return v;
+    }
     function normLabel(s) {
         return String(s || '').replace(/[^0-9a-z.,\s]/gi, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
     }
@@ -295,6 +312,8 @@
         return null;
     }
     function selectOptions(sel) {
+        const cur = sel.options[sel.selectedIndex];
+        knownRadius = parseRadius(cur && cur.textContent) || knownRadius;
         return Array.prototype.map.call(sel.options, function (o) {
             return {
                 label: (o.textContent || '').trim() || o.value,
@@ -318,6 +337,9 @@
         if (!menu) return null;
         let items = Array.prototype.slice.call(menu.querySelectorAll('a, button'));
         if (!items.length) { items = Array.prototype.slice.call(menu.querySelectorAll('li, option')); }
+        // What the control displays IS the current radius, even when the menu
+        // rows word it differently (0.5 mi vs 804.7 m), so read it from there.
+        knownRadius = parseRadius(current) || knownRadius;
         const cur = normLabel(current);
         return items.filter(function (it) { return RADIUS_RE.test(it.textContent || ''); })
             .map(function (it) {
@@ -383,6 +405,68 @@
             barToggle.textContent = hidden ? 'Näytä alkuperäinen alapalkki' : 'Piilota alkuperäinen alapalkki';
         });
         toolbar.appendChild(barToggle);
+    }
+
+    // ---------------------------------------------------------------------
+    // Terrain check for suggested spots: is the point in water or on a
+    // building? OpenStreetMap's Overpass API answers that exactly and
+    // server-side -- is_in() returns the areas containing the point and only
+    // their count is needed, so one request covers every candidate and the
+    // whole reply is a few hundred bytes.
+    //
+    // MML's own data would be the authoritative source, but its query service
+    // answers a point question with whole lake polygons (megabytes), so OSM
+    // wins here. OSM's Finnish water and building data is largely imported
+    // from MML, so the answers agree in practice. One known gap: the open sea
+    // is a coastline in OSM, not an area, so a spot far out at sea reads as
+    // land -- lakes, which is what this is for inland, are areas and do not.
+    const OVERPASS = [
+        'https://overpass-api.de/api/interpreter',
+        'https://overpass.kumi.systems/api/interpreter'
+    ];
+    function terrainQuery(points) {
+        let q = '[out:json][timeout:25];';
+        points.forEach(function (p) {
+            q += 'is_in(' + p.ll.lat.toFixed(6) + ',' + p.ll.lng.toFixed(6) + ')->.a;' +
+                '(area.a["natural"="water"];area.a["waterway"];area.a["building"];' +
+                'area.a["landuse"~"^(reservoir|basin)$"];)->.b;' +
+                '.b out count;';
+        });
+        return q;
+    }
+    // Calls back with an array of booleans (true = blocked) in the order the
+    // points were given, or null when no answer could be had.
+    function terrainCheck(points, done) {
+        if (typeof GM_xmlhttpRequest !== 'function' || !points.length) { done(null); return; }
+        let next = 0;
+        (function attempt() {
+            if (next >= OVERPASS.length) { done(null); return; }
+            const url = OVERPASS[next++];
+            GM_xmlhttpRequest({
+                method: 'POST',
+                url: url,
+                data: 'data=' + encodeURIComponent(terrainQuery(points)),
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                timeout: 30000,
+                onload: function (r) {
+                    try {
+                        const els = JSON.parse(r.responseText).elements || [];
+                        // One count per point, in order; anything else means we
+                        // cannot tell which answer belongs to which spot.
+                        if (els.length !== points.length) {
+                            throw new Error('odotettiin ' + points.length + ' tulosta, saatiin ' + els.length);
+                        }
+                        done(els.map(function (e) { return parseInt(e.tags.total, 10) > 0; }));
+                    } catch (e) {
+                        console.warn('[EnhancedLitmus] maastotarkistus epäonnistui (' + url +
+                            ', HTTP ' + r.status + ')', e);
+                        attempt();
+                    }
+                },
+                onerror: function () { attempt(); },
+                ontimeout: function () { attempt(); }
+            });
+        })();
     }
 
     // ---------------------------------------------------------------------
@@ -466,7 +550,19 @@
             '.kp-bar-toggle{margin-left:auto;font-size:12px;padding:2px 8px;cursor:pointer;' +
             'border:1px solid #888;border-radius:4px;background:#f4f4f4;}' +
             '.kp-bar-toggle:hover{background:#e8e8e8;}' +
-            '.kp-bar-hidden{display:none !important;}');
+            '.kp-bar-hidden{display:none !important;}' +
+            // Free-spot suggestions.
+            '.kp-spotbox{background:#fff;padding:6px 8px;border-radius:4px;font-size:12px;' +
+            'box-shadow:0 1px 5px rgba(0,0,0,0.4);max-width:270px;}' +
+            '.kp-spot-row{margin-top:3px;}' +
+            '.kp-spot-note{margin-top:5px;color:#a1690a;}' +
+            '.kp-spot-coord{font-family:monospace;}' +
+            '.kp-spot-copy{margin-left:4px;padding:1px 6px;cursor:pointer;border:1px solid #888;' +
+            'border-radius:3px;background:#f4f4f4;font-size:11px;}' +
+            '.kp-spot-copy:hover{background:#e8e8e8;}' +
+            '.kp-ok{color:#2b8a3e;font-weight:bold;}' +
+            '.kp-bad{color:#e03131;font-weight:bold;}' +
+            '.kp-wait{color:#888;}');
 
         // Insert the map after the existing proximity (Google) map, hide that
         // original map by default, and offer a button to bring it back.
@@ -808,6 +904,212 @@
             link.classList.add('active'); link.title = 'Lopeta koordinaattien poiminta';
             map.getContainer().style.cursor = 'crosshair';
             map.on('click', onCoordClick);
+        });
+
+        // --- Vapaiden paikkojen ehdotus ----------------------------------
+        // Geocaching.com hylkää fyysisen pisteen, joka on alle 161 m toisesta
+        // fyysisestä pisteestä. Kun Litmus raportoi saturaation, tämä etsii
+        // lähimmät vapaat paikat: renkaittain ulospäin saturoivasta pisteestä,
+        // pienin siirto ensin, ja varmistaa OSM:stä ettei paikka ole vedessä
+        // tai rakennuksen päällä.
+        const SAT_SAFE = 166;     // 161 m + marginaali pyöristyksille
+        const SPOT_MAX = 500;     // kuinka kaukaa alkuperäisestä etsitään
+        const SPOT_STEP = 10;     // rengasväli metreinä
+        const SPOT_APART = 80;    // ehdotusten vähimmäisetäisyys toisistaan
+        const SPOT_SHOW = 3;      // kerralla näytettävät
+        const SPOT_POOL = 8;      // maastotarkistukseen lähetettävät
+
+        let spotActive = false, spotLink = null, spotLayers = [];
+        let spotBoxCtl = null, spotBoxDiv = null, spotNote = '';
+
+        // Every physical point the moved one must stay 161 m away from:
+        // neighbours that are not archived (unpublished and disabled ones
+        // still count), plus the reviewed cache's own other physical points.
+        function saturationBlockers(exclude) {
+            const list = [];
+            collected.others.forEach(function (o) {
+                if (!o.isArchived && o._ll) { list.push({ ll: o._ll, p: o }); }
+            });
+            collected.ours.forEach(function (o) {
+                if (o !== exclude && o._ll) { list.push({ ll: o._ll, p: o }); }
+            });
+            return list;
+        }
+        function nearestBlocker(ll, blockers) {
+            let best = null;
+            for (let i = 0; i < blockers.length; i++) {
+                const d = ll.distanceTo(blockers[i].ll);
+                if (!best || d < best.d) { best = { d: d, p: blockers[i].p }; }
+            }
+            return best;
+        }
+        // Rings outward from the original point, sampled about every 15 m
+        // along each ring, so the smallest move that clears every neighbour
+        // comes first. Spots closer than SPOT_APART to one already found are
+        // skipped, which spreads the suggestions around instead of returning
+        // three variations of the same direction.
+        function findFreeSpots(origin, exclude) {
+            const blockers = saturationBlockers(exclude);
+            const found = [];
+            for (let r = SPOT_STEP; r <= SPOT_MAX; r += SPOT_STEP) {
+                const astep = Math.min(45, Math.max(2, 360 / ((2 * Math.PI * r) / 15)));
+                for (let a = 0; a < 360; a += astep) {
+                    const ll = destPoint(origin, r, a);
+                    const near = nearestBlocker(ll, blockers);
+                    if (near && near.d < SAT_SAFE) continue;
+                    if (found.some(function (f) { return f.ll.distanceTo(ll) < SPOT_APART; })) continue;
+                    found.push({
+                        ll: ll, origin: origin, move: r, brg: a,
+                        clear: near ? near.d : Infinity, nearest: near ? near.p : null,
+                        terrain: 'pending',
+                        // A spot whose own 161 m circle reaches past the page's
+                        // query radius is judged on neighbours the page never
+                        // fetched, so say so instead of implying it is clear.
+                        edge: !!(knownRadius && cacheRef.distanceTo(ll) + 161 > knownRadius)
+                    });
+                    if (found.length >= SPOT_POOL) return found;
+                }
+            }
+            return found;
+        }
+
+        function terrainLabel(s) {
+            if (s.terrain === 'ok') return '<span class="kp-ok">maalla ✓</span>';
+            if (s.terrain === 'bad') return '<span class="kp-bad">vedessä tai rakennuksella ✗</span>';
+            if (s.terrain === 'pending') return '<span class="kp-wait">tarkistetaan…</span>';
+            return '<span class="kp-wait">ei tarkistettu</span>';
+        }
+        function spotPopupHtml(s, i) {
+            const lat = s.ll.lat, lng = s.ll.lng;
+            const gc = s.nearest ? (s.nearest.gcCode || s.nearest.parentCacheGCCode || '') : '';
+            return '<b>Vapaa paikka ' + (i + 1) + '</b><br>' +
+                '<span class="kp-spot-coord">' + fmtCoord(lat, lng) + '</span>' +
+                ' <button class="kp-spot-copy" type="button">Kopioi</button>' +
+                '<br>Siirto: <b>' + fmtDist(s.move) + ' suuntaan ' + fmtBearing(s.brg) + '</b>' +
+                '<br>Lähin fyysinen piste: ' + fmtDist(s.clear) +
+                (gc ? ' (' + escapeHtml(gc) + ')' : '') +
+                '<br>Maasto: ' + terrainLabel(s) +
+                (s.edge ? '<br><span class="kp-bad">⚠ Kyselysäteen reunalla</span> — ' +
+                    'naapureita tämän takaa ei ole haettu.' : '') +
+                '<br><a target="_blank" href="' + karttapaikkaLink(lat, lng) + '">Karttapaikka</a>' +
+                ' · <a target="_blank" href="' + googleMapsLink(lat, lng) + '">Google Maps</a>';
+        }
+
+        // Copy buttons live inside popup HTML, so they are wired when the
+        // popup opens rather than when the string is built.
+        map.on('popupopen', function (e) {
+            const el = e.popup.getElement();
+            const btn = el && el.querySelector('.kp-spot-copy');
+            const txt = el && el.querySelector('.kp-spot-coord');
+            if (!btn || !txt) return;
+            L.DomEvent.on(btn, 'click', function (ev) {
+                L.DomEvent.preventDefault(ev);
+                const v = txt.textContent;
+                try { GM_setClipboard(v); }
+                catch (err) { if (navigator.clipboard) { navigator.clipboard.writeText(v); } }
+                const old = btn.textContent;
+                btn.textContent = 'Kopioitu!';
+                setTimeout(function () { btn.textContent = old; }, 1200);
+            });
+        });
+
+        const SpotBox = L.Control.extend({
+            options: { position: 'bottomright' },
+            onAdd: function () {
+                spotBoxDiv = L.DomUtil.create('div', 'kp-spotbox');
+                L.DomEvent.disableClickPropagation(spotBoxDiv);
+                return spotBoxDiv;
+            }
+        });
+        function clearSpots() {
+            spotLayers.forEach(function (l) { if (map.hasLayer(l)) { map.removeLayer(l); } });
+            spotLayers = [];
+            if (spotBoxCtl) { map.removeControl(spotBoxCtl); spotBoxCtl = null; spotBoxDiv = null; }
+        }
+        function renderSpots(target, pool) {
+            spotLayers.forEach(function (l) { if (map.hasLayer(l)) { map.removeLayer(l); } });
+            spotLayers = [];
+            // A spot the terrain check rejected drops out and the next
+            // candidate takes its place.
+            const shown = pool.filter(function (s) { return s.terrain !== 'bad'; }).slice(0, SPOT_SHOW);
+            shown.forEach(function (s, i) {
+                const marker = L.circleMarker(s.ll, {
+                    radius: 8, color: '#2b8a3e', weight: 3, fillColor: '#8ce99a', fillOpacity: 0.9
+                }).addTo(map).bindPopup(spotPopupHtml(s, i));
+                spotLayers.push(marker);
+                spotLayers.push(L.polyline([s.origin, s.ll], {
+                    color: '#2b8a3e', weight: 2, opacity: 0.7, dashArray: '4 6'
+                }).addTo(map));
+                // Its own 161 m circle, so the clearance is visible too.
+                spotLayers.push(L.circle(s.ll, {
+                    radius: 161, color: '#2b8a3e', weight: 1, opacity: 0.6, fill: false
+                }).addTo(map));
+                s._index = i;
+            });
+            let html = '<b>Vapaat paikat</b>';
+            if (target && target.name) { html += '<br><small>' + escapeHtml(target.name) + '</small>'; }
+            if (!shown.length) { html += '<div class="kp-spot-row">Ei ehdotuksia.</div>'; }
+            shown.forEach(function (s, i) {
+                html += '<div class="kp-spot-row"><b>' + (i + 1) + '.</b> ' + fmtDist(s.move) +
+                    ' ' + fmtBearing(s.brg) + ' · ' + terrainLabel(s) +
+                    (s.edge ? ' <span class="kp-bad">⚠</span>' : '') + '</div>';
+            });
+            if (shown.some(function (s) { return s.edge; })) {
+                html += '<div class="kp-spot-note">⚠ Merkityt ovat kyselysäteen' +
+                    (knownRadius ? ' (' + fmtDist(knownRadius) + ')' : '') +
+                    ' reunalla: kauempia naapureita ei ole haettu. Kasvata sädettä ja aja uudelleen.</div>';
+            }
+            if (spotNote) { html += '<div class="kp-spot-note">' + spotNote + '</div>'; }
+            if (!spotBoxCtl) { spotBoxCtl = new SpotBox(); map.addControl(spotBoxCtl); }
+            if (spotBoxDiv) { spotBoxDiv.innerHTML = html; }
+        }
+
+        function suggestSpots() {
+            const conflicted = collected.ours.filter(function (p) { return p._ll && hasConflict(p); });
+            if (!conflicted.length) {
+                spotNote = 'Litmus ei raportoi saturaatio-ongelmaa, joten siirrettävää pistettä ei ole.';
+                renderSpots(null, []);
+                return;
+            }
+            const target = conflicted[0];
+            spotNote = conflicted.length > 1 ?
+                'Myös muut pisteet saturoivat (' + conflicted.length +
+                ' kpl); ehdotukset koskevat ylläolevaa. Muut pisteet on laskettu paikoilleen.' : '';
+            const pool = findFreeSpots(target._ll, target);
+            if (!pool.length) {
+                spotNote = 'Vapaata paikkaa ei löytynyt ' + fmtDist(SPOT_MAX) + ' säteeltä.';
+                renderSpots(target, []);
+                return;
+            }
+            renderSpots(target, pool);
+            terrainCheck(pool, function (flags) {
+                if (!spotActive) return;            // tool switched off while waiting
+                if (!flags) {
+                    pool.forEach(function (s) { s.terrain = null; });
+                    spotNote = 'Maastoa ei voitu tarkistaa (OpenStreetMap ei vastannut). ' +
+                        'Tarkista kartalta ettei paikka ole vedessä tai rakennuksella.';
+                } else {
+                    pool.forEach(function (s, i) { s.terrain = flags[i] ? 'bad' : 'ok'; });
+                    const left = pool.filter(function (s) { return s.terrain !== 'bad'; }).length;
+                    if (!left) {
+                        spotNote = 'Kaikki löytyneet paikat osuivat veteen tai rakennukselle.';
+                    }
+                }
+                renderSpots(target, pool);
+            });
+        }
+
+        const SPOT_ICON = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s7-6.2 7-11a7 7 0 0 0-14 0c0 4.8 7 11 7 11z"/><path d="M12 7v6M9 10h6"/></svg>';
+        spotLink = iconButton(SPOT_ICON, 'Ehdota vapaita paikkoja', function (link) {
+            if (spotActive) {
+                spotActive = false; clearSpots();
+                link.classList.remove('active'); link.title = 'Ehdota vapaita paikkoja';
+                return;
+            }
+            stopMeasureMode(); stopCoordMode();
+            spotActive = true;
+            link.classList.add('active'); link.title = 'Piilota ehdotukset';
+            suggestSpots();
         });
 
         // A reviewed point's 161 m circle is RED only when the Litmus test
