@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Enhanced Litmus View
 // @namespace    http://tampermonkey.net/
-// @version      1.05
+// @version      1.06
 // @description  Add MML/OSM/Google map layers, road-owner & cadastral overlays, distance measurement and a WGS84 DDM coordinate picker to the reviewer Litmus Test page; hide the page bottom bar and rebuild its Query Radius control under the map; suggest free (non-saturating) spots for a cache that fails the 161 m rule
 // @author       Veli-Pekka Eloranta
 // @match        https://admin.geocaching.com/LitmusTest/*
@@ -424,6 +424,12 @@
         'https://overpass-api.de/api/interpreter',
         'https://overpass.kumi.systems/api/interpreter'
     ];
+    // overpass-api.de answers 406 Not Acceptable to a browser User-Agent and
+    // to a missing one, and GM_xmlhttpRequest sends the browser's own by
+    // default -- which made every check fail. Overpass's usage policy asks
+    // for an identifying agent anyway, so name the script and link it.
+    const OVERPASS_UA = 'EnhancedLitmusView/1.06 ' +
+        '(geocaching reviewer tool; +https://github.com/weellu/kpRevScript)';
     function terrainQuery(points) {
         let q = '[out:json][timeout:25];';
         points.forEach(function (p) {
@@ -435,18 +441,27 @@
         return q;
     }
     // Calls back with an array of booleans (true = blocked) in the order the
-    // points were given, or null when no answer could be had.
+    // points were given, or (null, reason) when no answer could be had. The
+    // reason is shown in the UI so a failure says what went wrong instead of
+    // leaving it to the console.
     function terrainCheck(points, done) {
-        if (typeof GM_xmlhttpRequest !== 'function' || !points.length) { done(null); return; }
-        let next = 0;
+        if (!points.length) { done(null, 'ei ehdokkaita'); return; }
+        if (typeof GM_xmlhttpRequest !== 'function') {
+            done(null, 'Tampermonkey ei antanut GM_xmlhttpRequest-oikeutta');
+            return;
+        }
+        let next = 0, problem = null;
         (function attempt() {
-            if (next >= OVERPASS.length) { done(null); return; }
+            if (next >= OVERPASS.length) { done(null, problem); return; }
             const url = OVERPASS[next++];
             GM_xmlhttpRequest({
                 method: 'POST',
                 url: url,
                 data: 'data=' + encodeURIComponent(terrainQuery(points)),
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'User-Agent': OVERPASS_UA
+                },
                 timeout: 30000,
                 onload: function (r) {
                     try {
@@ -458,13 +473,15 @@
                         }
                         done(els.map(function (e) { return parseInt(e.tags.total, 10) > 0; }));
                     } catch (e) {
+                        problem = 'HTTP ' + r.status +
+                            (r.status === 406 ? ' – palvelin hylkäsi User-Agentin' : '');
                         console.warn('[EnhancedLitmus] maastotarkistus epäonnistui (' + url +
                             ', HTTP ' + r.status + ')', e);
                         attempt();
                     }
                 },
-                onerror: function () { attempt(); },
-                ontimeout: function () { attempt(); }
+                onerror: function () { problem = 'yhteys ei auennut'; attempt(); },
+                ontimeout: function () { problem = 'aikakatkaisu'; attempt(); }
             });
         })();
     }
@@ -1082,11 +1099,12 @@
                 return;
             }
             renderSpots(target, pool);
-            terrainCheck(pool, function (flags) {
+            terrainCheck(pool, function (flags, problem) {
                 if (!spotActive) return;            // tool switched off while waiting
                 if (!flags) {
                     pool.forEach(function (s) { s.terrain = null; });
-                    spotNote = 'Maastoa ei voitu tarkistaa (OpenStreetMap ei vastannut). ' +
+                    spotNote = 'Maastoa ei voitu tarkistaa' +
+                        (problem ? ' (' + escapeHtml(problem) + ')' : '') + '. ' +
                         'Tarkista kartalta ettei paikka ole vedessä tai rakennuksella.';
                 } else {
                     pool.forEach(function (s, i) { s.terrain = flags[i] ? 'bad' : 'ok'; });
