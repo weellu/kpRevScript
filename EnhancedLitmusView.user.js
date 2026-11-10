@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Enhanced Litmus View
 // @namespace    http://tampermonkey.net/
-// @version      1.03
+// @version      1.04
 // @description  Add MML/OSM/Google map layers, road-owner & cadastral overlays, distance measurement and a WGS84 DDM coordinate picker to the reviewer Litmus Test page; hide the page bottom bar and rebuild its Query Radius control under the map
 // @author       Veli-Pekka Eloranta
 // @match        https://admin.geocaching.com/LitmusTest/*
@@ -69,6 +69,34 @@
         return hemi + ' ' + dp + '° ' + parts[0].padStart(2, '0') + '.' + parts[1] + "'";
     }
     function fmtCoord(lat, lng) { return toDDM(lat, true) + ' ' + toDDM(lng, false); }
+
+    // Initial great-circle bearing and its 16-point compass name. A reviewer
+    // asking an owner to move a cache gives a direction and a distance, so
+    // both are spelled out the way they would be written in a reviewer note.
+    const COMPASS16 = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE',
+        'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+    function bearingDeg(from, to) {
+        const r = Math.PI / 180;
+        const f1 = from.lat * r, f2 = to.lat * r, dl = (to.lng - from.lng) * r;
+        const y = Math.sin(dl) * Math.cos(f2);
+        const x = Math.cos(f1) * Math.sin(f2) - Math.sin(f1) * Math.cos(f2) * Math.cos(dl);
+        return (Math.atan2(y, x) / r + 360) % 360;
+    }
+    function fmtBearing(deg) {
+        // Rounding 359.7 must read 0°, not 360°.
+        return (Math.round(deg) % 360) + '° ' + COMPASS16[Math.round(deg / 22.5) % 16];
+    }
+    // The inverse: the point at a given distance and bearing. Used to walk
+    // outward from a saturating point looking for free ground. The radius is
+    // Leaflet's own, so these points measure back exactly with distanceTo.
+    function destPoint(ll, dist, brg) {
+        const R = 6371000, r = Math.PI / 180;
+        const d = dist / R, t = brg * r, f1 = ll.lat * r, l1 = ll.lng * r;
+        const f2 = Math.asin(Math.sin(f1) * Math.cos(d) + Math.cos(f1) * Math.sin(d) * Math.cos(t));
+        const l2 = l1 + Math.atan2(Math.sin(t) * Math.sin(d) * Math.cos(f1),
+            Math.cos(d) - Math.sin(f1) * Math.sin(f2));
+        return L.latLng(f2 / r, ((l2 / r + 540) % 360) - 180);
+    }
 
     // Read the cache + waypoint coordinates the Litmus page exposes as
     // [data-lat][data-lng] anchors (cache first, then waypoints).
@@ -417,7 +445,10 @@
             'font-weight:bold;padding:1px 6px;border-radius:3px;box-shadow:0 1px 3px rgba(0,0,0,0.3);}' +
             '.kp-measure-tip:before{display:none;}' +
             '.kp-coordbox{background:#fff;padding:6px;border-radius:4px;box-shadow:0 1px 5px rgba(0,0,0,0.4);' +
-            'display:flex;gap:6px;align-items:center;}' +
+            'display:flex;flex-direction:column;gap:4px;}' +
+            '.kp-coord-row{display:flex;gap:6px;align-items:center;}' +
+            '.kp-coord-meta{font-size:12px;color:#333;}' +
+            '.kp-coord-meta b{color:#0b60b0;}' +
             '.kp-coord-input{width:230px;font-family:monospace;font-size:13px;padding:3px 6px;' +
             'border:1px solid #bbb;border-radius:3px;}' +
             '.kp-coord-copy{padding:3px 10px;cursor:pointer;border:1px solid #888;border-radius:3px;' +
@@ -704,13 +735,18 @@
 
         // --- WGS84 DDM (degrees decimal minutes) coordinate picker --------------------------------
         let coordActive = false, coordMarker = null, coordInput = null, coordBoxCtl = null, coordLink = null;
+        let coordMeta = null, coordLine = null;
+        const cacheRef = L.latLng(cacheLL[0], cacheLL[1]);
         const CoordBox = L.Control.extend({
             options: { position: 'bottomleft' },
             onAdd: function () {
                 const div = L.DomUtil.create('div', 'kp-coordbox');
-                div.innerHTML = '<input class="kp-coord-input" readonly aria-label="Koordinaatit">' +
-                    '<button class="kp-coord-copy" type="button">Kopioi</button>';
+                div.innerHTML = '<div class="kp-coord-row">' +
+                    '<input class="kp-coord-input" readonly aria-label="Koordinaatit">' +
+                    '<button class="kp-coord-copy" type="button">Kopioi</button></div>' +
+                    '<div class="kp-coord-meta"></div>';
                 coordInput = div.querySelector('.kp-coord-input');
+                coordMeta = div.querySelector('.kp-coord-meta');
                 const btn = div.querySelector('.kp-coord-copy');
                 L.DomEvent.disableClickPropagation(div);
                 L.DomEvent.on(btn, 'click', function (e) { L.DomEvent.preventDefault(e); doCopy(btn); });
@@ -730,6 +766,16 @@
             const txt = fmtCoord(ll.lat, ll.lng);
             if (!coordBoxCtl) { coordBoxCtl = new CoordBox(); map.addControl(coordBoxCtl); }
             if (coordInput) { coordInput.value = txt; }
+            // Distance and bearing from the reviewed cache: the pair a
+            // reviewer quotes when asking an owner to move a cache.
+            const away = cacheRef.distanceTo(ll);
+            const brg = bearingDeg(cacheRef, ll);
+            const fromCache = fmtDist(away) + ' suuntaan ' + fmtBearing(brg);
+            if (coordMeta) { coordMeta.innerHTML = 'Kätköltä: <b>' + escapeHtml(fromCache) + '</b>'; }
+            // A dashed line makes the direction visible, not just stated.
+            if (coordLine) { map.removeLayer(coordLine); }
+            coordLine = L.polyline([cacheRef, ll], { color: '#e03131', weight: 1.5,
+                opacity: 0.8, dashArray: '5 5' }).addTo(map);
             if (!coordMarker) {
                 coordMarker = L.circleMarker(ll, { radius: 6, color: '#e03131', weight: 2, fillColor: '#e03131', fillOpacity: 0.6 }).addTo(map);
             } else { coordMarker.setLatLng(ll); }
@@ -737,9 +783,11 @@
             // measures itself against.
             applyDistances(ll);
             const near = nearestTo(ll);
-            coordMarker.bindPopup(txt + (near ? '<br><b>Lähin:</b> ' +
-                escapeHtml(near.p.name || near.p.parentCacheName || 'piste') +
-                ' · ' + fmtDist(near.d) : '')).openPopup();
+            coordMarker.bindPopup(txt +
+                '<br><b>Kätköltä:</b> ' + escapeHtml(fromCache) +
+                (near ? '<br><b>Lähin:</b> ' +
+                    escapeHtml(near.p.name || near.p.parentCacheName || 'piste') +
+                    ' · ' + fmtDist(near.d) : '')).openPopup();
         }
         function stopCoordMode() {
             map.off('click', onCoordClick);
@@ -748,7 +796,8 @@
             if (coordLink) { coordLink.classList.remove('active'); coordLink.title = 'Poimi koordinaatit'; }
         }
         function clearCoord() {
-            if (coordBoxCtl) { map.removeControl(coordBoxCtl); coordBoxCtl = null; coordInput = null; }
+            if (coordBoxCtl) { map.removeControl(coordBoxCtl); coordBoxCtl = null; coordInput = null; coordMeta = null; }
+            if (coordLine) { map.removeLayer(coordLine); coordLine = null; }
             if (coordMarker) { map.removeLayer(coordMarker); coordMarker = null; }
             applyDistances(null);
         }
